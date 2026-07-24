@@ -723,14 +723,29 @@ def _run_mint_and_auth_push(
                 "castle",
                 "policy=deny",
                 "user_risk_level_high",
+                "skipped_bot_flag",
             )
         )
-        if bot_blocked:
+        skip_bot_cfg = True
+        try:
+            from auth_service import _skip_bot_flag_on_mint_enabled
+
+            skip_bot_cfg = bool(_skip_bot_flag_on_mint_enabled())
+        except Exception:
+            skip_bot_cfg = True
+        allow_browser_fallback = password and "require_grok_45" not in str(err)
+        if bot_blocked and skip_bot_cfg:
             log(
-                f"[auth-queue] 跳过 browser Device mint（bot/风控已锁死 OAuth）email={email or '-'} "
-                f"err={str(err)[:160]}"
+                f"[auth-queue] 跳过 browser Device mint（bot/风控；skip_bot_flag_on_mint=true）"
+                f" email={email or '-'} err={str(err)[:160]}"
             )
-        elif password and "require_grok_45" not in str(err):
+            allow_browser_fallback = False
+        elif bot_blocked and not skip_bot_cfg and allow_browser_fallback:
+            log(
+                f"[auth-queue] bot/风控号仍尝试 browser Device mint（skip_bot_flag_on_mint=false）"
+                f" email={email or '-'}"
+            )
+        if allow_browser_fallback:
             try:
                 from browser_device_mint import mint_with_password_browser
 

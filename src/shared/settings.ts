@@ -333,8 +333,10 @@ export interface AppSettings {
    */
   proxyIpIntervalSec: number;
   /**
-   * 补签 Auth / mint 时跳过 SSO JWT 中 bot_flag_source=1 的账号。
-   * 默认 true。无法抹掉已签发 claim，仅过滤。
+   * mint / 补签时跳过 bot 标记账号。
+   * true（默认）= get-user botFlag / JWT bot_flag_source=1 / 高风险时不 mint；
+   * false=仍尝试 mint（费时间，但策略变化时不丢号）。
+   * 写入 Python config：skip_bot_flag_on_mint
    */
   skipBotFlag1OnMint: boolean;
   /**

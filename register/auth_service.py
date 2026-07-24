@@ -48,6 +48,45 @@ def _noop(msg: str) -> None:
     return None
 
 
+
+def _skip_bot_flag_on_mint_enabled() -> bool:
+    """config/env: skip bot/high-risk before OAuth mint. Default True (safe).
+
+    Keys: skip_bot_flag_on_mint / skipBotFlag1OnMint / SKIP_BOT_FLAG_ON_MINT
+    Set false to still attempt mint (may waste time; keep SSO for later retry).
+    """
+    env = (
+        os.environ.get("SKIP_BOT_FLAG_ON_MINT")
+        or os.environ.get("skip_bot_flag_on_mint")
+        or ""
+    ).strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    conf_path = Path(__file__).resolve().parent / "config.json"
+    try:
+        conf = json.loads(conf_path.read_text(encoding="utf-8"))
+        for k in (
+            "skip_bot_flag_on_mint",
+            "skipBotFlag1OnMint",
+            "skip_bot_flag1_on_mint",
+        ):
+            if k not in conf:
+                continue
+            v = conf.get(k)
+            if isinstance(v, bool):
+                return v
+            s = str(v or "").strip().lower()
+            if s in ("0", "false", "no", "off"):
+                return False
+            if s in ("1", "true", "yes", "on"):
+                return True
+    except Exception:
+        pass
+    return True
+
+
 def probe_sso_oauth_gate(
     sso: str,
     *,
@@ -765,21 +804,28 @@ def sso_to_cpa_auth(
     except Exception as e:
         log(f"[auth] materialize 跳过: {e}")
 
-    # Castle bot / 高风险账号：OAuth allow 后仍 invalid_grant，提前失败省时间
+    # Castle bot / 高风险：默认跳过 mint（可关 skip_bot_flag_on_mint 仍尝试）
     gate = probe_sso_oauth_gate(sso, proxy=proxy or "", log=log)
     if gate.get("blocked"):
-        return {
-            "ok": False,
-            "error": gate.get("error") or "sso blocked for OAuth (bot/high-risk)",
-            "email": email or gate.get("email") or "",
-            "mint_mode": (mint_mode or _read_cpa_mint_mode() or "pkce"),
-            "oauth_gate": {
-                "riskLevel": gate.get("riskLevel"),
-                "botFlagSource": gate.get("botFlagSource"),
-                "botFlagDetails": gate.get("botFlagDetails"),
-                "userId": gate.get("userId"),
-            },
-        }
+        if _skip_bot_flag_on_mint_enabled():
+            return {
+                "ok": False,
+                "error": gate.get("error") or "sso blocked for OAuth (bot/high-risk)",
+                "email": email or gate.get("email") or "",
+                "mint_mode": (mint_mode or _read_cpa_mint_mode() or "pkce"),
+                "skipped_bot_flag": True,
+                "oauth_gate": {
+                    "riskLevel": gate.get("riskLevel"),
+                    "botFlagSource": gate.get("botFlagSource"),
+                    "botFlagDetails": gate.get("botFlagDetails"),
+                    "userId": gate.get("userId"),
+                },
+            }
+        log(
+            "[auth] ⚠ bot/high-risk 仍继续 mint（skip_bot_flag_on_mint=false）"
+            f" email={email or gate.get('email') or '-'} "
+            f"bot={gate.get('botFlagSource') or '-'} risk={gate.get('riskLevel') or '-'}"
+        )
     if not email and gate.get("email"):
         email = str(gate.get("email") or "")
 

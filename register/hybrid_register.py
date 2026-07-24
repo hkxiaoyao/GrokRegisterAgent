@@ -505,6 +505,7 @@ return true;
                 pass
 
             # Fresh castle + conversionId before CreateUser (registration risk event)
+            conv_id = str(uuid.uuid4())
             try:
                 if hasattr(browser, "_kick_page_castle_mint"):
                     browser._kick_page_castle_mint(_get_page())
@@ -521,9 +522,6 @@ return true;
                 # Inject conversionId + castle into any matching form fields React may bind
                 pg_pre = _get_page()
                 if pg_pre is not None:
-                    import uuid as _uuid_pre
-
-                    conv_id = str(_uuid_pre.uuid4())
                     pg_pre.run_js(
                         """
 const castle = String(arguments[0]||'');
@@ -561,6 +559,12 @@ return {nC, nV, clen: castle.length, conv: conv.slice(0,8)};
                     log(f"[hybrid] pre-profile inject conversionId={conv_id[:8]}… castle_len={len(str(castle2 or ''))}")
             except Exception as pe0:
                 log(f"[hybrid] pre-profile castle/conversion inject skip: {pe0}")
+
+            # short human dwell before CreateUser / profile submit
+            try:
+                time.sleep(0.6 + secrets.randbelow(90) / 100.0)
+            except Exception:
+                time.sleep(0.8)
 
             # Native profile submit (React binds valid Server Action)
             if hasattr(browser, "submit_profile_and_wait_sso"):
@@ -613,6 +617,18 @@ return {nC, nV, clen: castle.length, conv: conv.slice(0,8)};
                         f"castle_len={len(str(castle2 or ''))}"
                     )
                     try:
+                        # re-mint castle immediately before CreateUser
+                        try:
+                            if hasattr(browser, "read_captured_castle"):
+                                c3 = browser.read_captured_castle() or ""
+                                if (
+                                    c3
+                                    and len(c3) >= 1000
+                                    and str(c3).startswith("IBYIll")
+                                ):
+                                    castle2 = c3
+                        except Exception:
+                            pass
                         br = browser.submit_create_user_server_action(
                             email=email,
                             code=clean,
@@ -622,6 +638,7 @@ return {nC, nV, clen: castle.length, conv: conv.slice(0,8)};
                             turnstile_token=turnstile,
                             castle_token=castle2,
                             next_action=act,
+                            conversion_id=str(conv_id or uuid.uuid4()),
                         )
                     except Exception as se:
                         log(f"[hybrid] browser SA err: {se}")
@@ -674,7 +691,7 @@ return {nC, nV, clen: castle.length, conv: conv.slice(0,8)};
                             turnstile_token=turnstile,
                             castle_token=castle2,
                             next_action=act,
-                            conversion_id=str(uuid.uuid4()),
+                            conversion_id=str(conv_id or uuid.uuid4()),
                         )
                     except Exception as se:
                         log(f"[hybrid] curl SA err: {se}")

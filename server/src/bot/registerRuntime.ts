@@ -409,6 +409,10 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     config.cpa_mint_mode = 'pkce';
   }
 
+  // Bot/高风险是否跳过 mint（默认 true；关=仍尝试，避免策略松动丢号）
+  config.skip_bot_flag_on_mint =
+    (settings as { skipBotFlag1OnMint?: boolean }).skipBotFlag1OnMint !== false;
+
   // 推送：允许(push*) 与 自动(autoPush*) 分离；注册成功只跟自动走
   const allowSsoG2 = settings.pushSsoToGrok2api === true;
   const autoSsoG2 =
@@ -460,7 +464,7 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
         `planB=${config.register_plan_b_enabled !== false} ` +
         `planC=${!!config.register_plan_c_enabled} ` +
         `planOrder=${Array.isArray(config.register_plan_order) ? (config.register_plan_order as string[]).join('>') : 'A>B>C'} ` +
-        `cpa_mint_mode=${config.cpa_mint_mode || 'pkce'} ` +
+        `cpa_mint_mode=${config.cpa_mint_mode || 'pkce'} skip_bot_mint=${config.skip_bot_flag_on_mint !== false} ` +
         `cpa_remote=${config.cpa_remote_url ? 'set' : 'off'}`
     );
   } catch {

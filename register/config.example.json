@@ -30,6 +30,8 @@
     "cpa_mint_queue_max": 0,
     "_comment_cpa_mint_pool": "U1 mint 独立池：workers>0 与授权队列分离；0=内联在 auth worker；queue_max=0 → 2×workers",
     "cpa_mint_mode": "pkce",
+    "skip_bot_flag_on_mint": true,
+    "_comment_skip_bot_flag_on_mint": "true=get-user bot/high-risk 时跳过 mint（省时间）；false=仍尝试 mint（号可后补）",
     "require_grok_45": true,
     "_comment_cpa_mint_mode": "pkce | device | double（double=两通道各写 auth 并分别测活，互不影响）",
     "_comment_require_grok_45": "mint 后 GET /models 无 grok-4.5 则不推 CPA",
