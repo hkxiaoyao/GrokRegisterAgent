@@ -461,22 +461,58 @@ return {pw:!!pw, gn:!!gn, email:!!email, code:!!code, url: location.href};
             log(f"[hybrid] profile fields ready={profile_ok}")
 
             # Turnstile on current page (prefer inject; native often empty under automation)
+            # fail-fast: CF failure 反馈页时禁止 45s+50s 双轮卡死
+            def _page_turnstile_failed() -> bool:
+                try:
+                    pg = _get_page()
+                    if pg is None:
+                        return False
+                    return bool(
+                        pg.run_js(
+                            r"""
+const frames = Array.from(document.querySelectorAll('iframe')).map((f) => {
+  try { return {src: String(f.src||''), title: String(f.title||'')}; } catch (e) { return {src:'', title:''}; }
+});
+return frames.some((f) => /\/failure/i.test(f.src) || /feedback report/i.test(f.title));
+"""
+                        )
+                    )
+                except Exception:
+                    return False
+
             try:
                 log("[hybrid] turnstile on current step…")
-                turnstile = browser.get_turnstile_token(timeout=45, inject=True, fast=False)
+                if _page_turnstile_failed():
+                    log("[hybrid] turnstile already failure UI — skip long solve (fail-fast)")
+                    turnstile = ""
+                else:
+                    turnstile = browser.get_turnstile_token(timeout=28, inject=True, fast=True)
             except TypeError:
                 try:
-                    turnstile = browser.get_turnstile_token(timeout=45, inject=True)
+                    turnstile = browser.get_turnstile_token(timeout=28, inject=True)
                 except Exception as te:
                     log(f"[hybrid] turnstile: {te}")
+                    turnstile = ""
             except Exception as te:
                 log(f"[hybrid] turnstile: {te}")
+                turnstile = ""
             if len(str(turnstile or "")) < 80:
-                try:
-                    turnstile = browser.get_turnstile_token(timeout=50, inject=True)
-                except Exception:
-                    pass
+                if _page_turnstile_failed():
+                    log("[hybrid] turnstile failure after first attempt — no second long retry")
+                else:
+                    try:
+                        # short second try only if not hard-failure UI
+                        turnstile = browser.get_turnstile_token(timeout=18, inject=True, fast=True)
+                    except Exception:
+                        pass
             log(f"[hybrid] turnstile_len={len(str(turnstile or ''))}")
+            if len(str(turnstile or "")) < 80 and _page_turnstile_failed():
+                return {
+                    "ok": False,
+                    "error": "turnstile_failure_feedback_page",
+                    "mode": "hybrid",
+                    "email": email,
+                }
 
             # Inject token into DOM for React form
             try:

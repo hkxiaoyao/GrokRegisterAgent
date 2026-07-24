@@ -2456,6 +2456,35 @@ return null;
                             f"status={status}"
                         )
                         return val
+                    # CF failure 反馈页：立即 hard-fail，禁止再等 auto_wait / shadow 连点
+                    try:
+                        from grok_register_ttk import _get_page as _gp_fail
+
+                        _pgf = _gp_fail()
+                        if _pgf is not None:
+                            _fail_frame = bool(
+                                _pgf.run_js(
+                                    r"""
+const frames=Array.from(document.querySelectorAll('iframe'));
+return frames.some(f=>{
+  try{
+    const s=String(f.src||'');
+    const t=String(f.title||'');
+    return /\/failure/i.test(s) || /feedback report/i.test(t);
+  }catch(e){return false;}
+});
+"""
+                                )
+                            )
+                            if _fail_frame:
+                                inject_failed_hard = True
+                                last_err_code = last_err_code or "failure-feedback"
+                                self._lg(
+                                    "[!] turnstile CF failure feedback page — fail-fast (no long wait)"
+                                )
+                                break
+                    except Exception:
+                        pass
                     if status in ("script-fail", "render-fail", "error", "expired") or fail_ui:
                         if status == "error" or fail_ui:
                             inject_failed_hard = True

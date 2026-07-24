@@ -3391,11 +3391,12 @@ def getTurnstileToken(timeout=50, log_callback=None, *, fast=False, auto_wait_ca
 
         if state.get("failure"):
             last_diag = f"failure-state frames={state.get('frames')}"
-            if reset_count < 2 and time.time() + 6 < deadline:
-                print("[*] 检测到 Turnstile failure，执行 soft reset。")
+            # fail-fast: CF failure 反馈页几乎不可靠连点恢复；最多 1 次 soft reset + 短等
+            if reset_count < 1 and time.time() + 4 < deadline:
+                print("[*] 检测到 Turnstile failure，执行 soft reset（最多 1 次，随后 fail-fast）。")
                 _soft_reset_turnstile()
                 reset_count += 1
-                wait_end = time.time() + min(8, deadline - time.time())
+                wait_end = time.time() + min(3.5, deadline - time.time())
                 while time.time() < wait_end:
                     token = _read_turnstile_token()
                     if token:
@@ -3403,8 +3404,8 @@ def getTurnstileToken(timeout=50, log_callback=None, *, fast=False, auto_wait_ca
                         return token
                     if _turnstile_widget_state().get("failure"):
                         break
-                    time.sleep(0.4)
-                continue
+                    time.sleep(0.35)
+                # 仍 failure → 直接退出，禁止继续 CDP 连点刷屏
             print("[Debug] Turnstile 已被 Cloudflare 判定 failure，停止连点。")
             break
 
@@ -5355,6 +5356,16 @@ def run_single_registration(
                             "nav_soft": True,
                         }
                     else:
+                        # pure_browser：禁止 hybrid 收尾（会在 Turnstile failure 后无限重试卡死）
+                        if _pure_browser_mode():
+                            raise Exception(
+                                f"pure_browser=1 · 资料页失败且禁止 hybrid 收尾: {em[:160]}"
+                            ) from pe
+                        # Turnstile CF failure 页：hybrid 同样解不了，fail-fast 换号/换代理
+                        if "failure 反馈页" in em or "Cloudflare 返回 failure" in em:
+                            raise Exception(
+                                f"plan-{plan_mode} Turnstile failure（跳过 hybrid 卡死重试）: {em[:160]}"
+                            ) from pe
                         print(
                             f"[Warn] 资料页失败，改 hybrid 收尾: {em[:120]}",
                             flush=True,
