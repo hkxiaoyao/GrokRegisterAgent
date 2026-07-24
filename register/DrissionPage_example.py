@@ -4337,7 +4337,7 @@ return yearInputs.length > 0 && /年龄|continue|确认|confirm|年龄|age/i.tes
 
 def fill_age_gate_and_submit(birth_year: int | None = None, timeout: float = 25) -> bool:
     """
-    填写年龄弹窗中的出生年份并点「继续」。
+    填写年龄弹窗中的出生年份并点 Save / Continue / 继续。
     返回 True 表示已提交或弹窗已消失；False 表示未找到/超时。
     """
     global page
@@ -4468,7 +4468,8 @@ if (!yearInput) {
             const text = (n.innerText || n.textContent || '').replace(/\s+/g, '');
             const t = text.toLowerCase();
             return text.includes('继续') || t.includes('continue') || text.includes('确认') || t.includes('confirm')
-                || text.includes('下一步') || t.includes('next') || t.includes('submit');
+                || text.includes('下一步') || t.includes('next') || t.includes('submit')
+                || t === 'save' || t.includes('save') || text.includes('保存');
         });
         if (cont) cont.click();
         return cont ? 'submitted' : 'filled-no-button';
@@ -4493,19 +4494,37 @@ if (cur2 !== year) {
 const buttons = deepQueryAll('button, [role="button"], a').filter((n) => {
     return isVisible(n) && !n.disabled && n.getAttribute('aria-disabled') !== 'true';
 });
-const cont = buttons.find((n) => {
-    const text = (n.innerText || n.textContent || '').replace(/\s+/g, '');
-    const t = text.toLowerCase();
-    return text === '继续' || text.includes('继续') || t === 'continue' || t.includes('continue')
-        || text === '确认' || text.includes('确认') || t === 'confirm' || t.includes('confirm')
-        || text === '下一步' || t.includes('next') || t.includes('submit');
-});
-if (!cont) {
-    return 'filled-no-button';
+function scoreAgeBtn(n) {
+    const text = (n.innerText || n.textContent || n.getAttribute('aria-label') || n.value || '').replace(/\s+/g, ' ').trim();
+    const t = text.toLowerCase().replace(/\s+/g, '');
+    if (!text || text.length > 32) return -1;
+    if (/google|apple|github|cookie|cancel|关闭|close|reject|skip|稍后|later|notnow/i.test(t)) return -1;
+    let s = 0;
+    if (t === 'save' || text === 'Save' || text === '保存') s += 200;
+    if (t.includes('save') || text.includes('保存')) s += 160;
+    if (t === 'continue' || text === '继续' || text.includes('继续')) s += 140;
+    if (t.includes('continue') || t.includes('confirm') || text.includes('确认')) s += 120;
+    if (t.includes('next') || text.includes('下一步') || t.includes('submit')) s += 80;
+    if (n.type === 'submit') s += 40;
+    try {
+      const r = n.getBoundingClientRect();
+      if (r.width >= 60 && r.width <= 360 && r.height >= 28 && r.height <= 72) s += 20;
+    } catch (e) {}
+    return s;
 }
+const ranked = buttons.map((n) => ({n, s: scoreAgeBtn(n)})).filter((x) => x.s > 0).sort((a,b) => b.s - a.s);
+const cont = ranked.length ? ranked[0].n : null;
+if (!cont) {
+    const labels = buttons.slice(0, 12).map((n) => (n.innerText || n.getAttribute('aria-label') || '').replace(/\s+/g,' ').trim().slice(0,24)).filter(Boolean);
+    return 'filled-no-button:' + labels.join('|');
+}
+try { cont.removeAttribute('disabled'); cont.disabled = false; cont.setAttribute('aria-disabled','false'); } catch (e) {}
 cont.focus();
+try { cont.scrollIntoView({block:'center'}); } catch (e) {}
 cont.click();
-return 'submitted';
+try { cont.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view: window})); } catch (e) {}
+return 'submitted:' + ((cont.innerText || cont.getAttribute('aria-label') || '').replace(/\s+/g,' ').trim().slice(0,24));
+
                 """,
                 year_s,
             )
@@ -4517,8 +4536,9 @@ return 'submitted';
 
         if result == "not-present":
             return False
-        if result == "submitted":
-            print(f"[*] 年龄门：已提交出生年 {year_s}")
+        if result == "submitted" or (isinstance(result, str) and str(result).startswith("submitted")):
+            lbl = str(result).split(":", 1)[1] if isinstance(result, str) and ":" in str(result) else ""
+            print(f"[*] 年龄门：已提交出生年 {year_s}" + (f" via={lbl!r}" if lbl else ""))
             time.sleep(1.2)
             if not detect_age_gate():
                 print("[*] 年龄门：弹窗已关闭")
@@ -4528,8 +4548,71 @@ return 'submitted';
             if not detect_age_gate():
                 return True
             continue
-        if result == "filled-no-button":
-            _log_throttled("no-btn", "[Debug] 年龄门：年份已填，未找到继续按钮")
+        if isinstance(result, str) and str(result).startswith("filled-no-button"):
+            detail = str(result).split(":", 1)[1] if ":" in str(result) else ""
+            _log_throttled(
+                "no-btn",
+                f"[Debug] 年龄门：年份已填，未找到继续/Save 按钮 labels={detail[:120]!r}",
+            )
+            # Grok 新 UI 主按钮是 Save（不是 Continue）
+            clicked_lbl = ""
+            for lab in ("Save", "SAVE", "保存", "Continue", "继续", "Confirm", "确认", "Next", "下一步"):
+                try:
+                    el = page.ele(f"text:{lab}", timeout=0.35) or page.ele(
+                        f"xpath://button[normalize-space(.)='{lab}']", timeout=0.25
+                    )
+                    if not el:
+                        continue
+                    try:
+                        try:
+                            box = el.rect
+                            mid_x = float(getattr(box, "mid_x", 0) or 0)
+                            mid_y = float(getattr(box, "mid_y", 0) or 0)
+                            if mid_x > 0 and mid_y > 0:
+                                _cdp_human_click(mid_x, mid_y)
+                                clicked_lbl = lab
+                                break
+                        except Exception:
+                            pass
+                        try:
+                            el.click(by_js=False)
+                        except Exception:
+                            el.click()
+                        clicked_lbl = lab
+                        break
+                    except Exception:
+                        continue
+                except Exception:
+                    continue
+            if not clicked_lbl:
+                try:
+                    clicked_lbl = page.run_js(
+                        r"""
+function vis(n){if(!n)return false;const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden')return false;const r=n.getBoundingClientRect();return r.width>0&&r.height>0;}
+const btns=[...document.querySelectorAll('button,[role=button],input[type=submit]')].filter(vis);
+const b=btns.find(n=>{
+  const t=((n.innerText||'')+(n.getAttribute('aria-label')||'')+(n.value||'')).toLowerCase().replace(/\s+/g,'');
+  return t==='save'||t.includes('save')||t.includes('保存')||t.includes('continue')||t.includes('继续');
+});
+if(!b) return '';
+try{b.removeAttribute('disabled');b.disabled=false;}catch(e){}
+b.click();
+return (b.innerText||b.getAttribute('aria-label')||'ok').slice(0,24);
+"""
+                    ) or ""
+                except Exception:
+                    clicked_lbl = ""
+            if clicked_lbl:
+                print(f"[*] 年龄门：补点提交按钮 {clicked_lbl!r}")
+                time.sleep(1.2)
+                if not detect_age_gate():
+                    print("[*] 年龄门：弹窗已关闭")
+                    return True
+                print("[*] 年龄门：已点 Save/Continue，弹窗可能仍在，继续观察…")
+                time.sleep(0.8)
+                if not detect_age_gate():
+                    return True
+                continue
         elif result == "no-input":
             _log_throttled("no-input", "[Debug] 年龄门：文案在但未找到年份输入框")
         elif isinstance(result, str) and result.startswith("fill-failed"):
