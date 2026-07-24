@@ -591,20 +591,67 @@ return {nC, nV, clen: castle.length, conv: conv.slice(0,8)};
                 except Exception as pe:
                     log(f"[hybrid] native profile: {pe}")
 
-            # Fallback: browser SA if we got a live action after profile hydration
+            # Fallback: browser SA if native profile submit produced no sso
             action_cands: list[str] = []
             if not sso:
+                log("[hybrid] native profile no sso → scrape next-action + SA fallback…")
+                # page may still be on profile; re-read turnstile/castle from DOM
                 try:
-                    live = str(browser.scrape_next_action() or "").strip()
-                    if live:
-                        action_cands.append(live)
-                        log(f"[hybrid] live next-action after profile={live[:20]}...")
-                except Exception:
-                    pass
+                    from grok_register_ttk import _get_page as _gp2
+
+                    pg2 = _gp2()
+                    if pg2 is not None:
+                        dom = pg2.run_js(
+                            r"""
+return {
+  ts: String((document.querySelector('input[name="cf-turnstile-response"]')||{}).value
+    || window.__hybrid_turnstile || '').trim(),
+  castle: String(window.__hybrid_castle || '').trim(),
+  meta: window.__hybrid_create_user_meta || null,
+  url: location.href.slice(0,140),
+  err: Array.from(document.querySelectorAll('[role=alert],p,span'))
+    .map(n=>(n.innerText||'').trim())
+    .filter(t=>t && t.length<100 && /error|invalid|failed|try again|something went wrong/i.test(t))
+    .slice(0,4),
+};
+"""
+                        )
+                        if isinstance(dom, dict):
+                            log(
+                                f"[hybrid] post-submit dom ts={len(str(dom.get('ts') or ''))} "
+                                f"castle={len(str(dom.get('castle') or ''))} "
+                                f"meta={dom.get('meta')} err={dom.get('err')} "
+                                f"url={dom.get('url')}"
+                            )
+                            if len(str(dom.get("ts") or "")) >= 80:
+                                turnstile = str(dom.get("ts") or turnstile)
+                            cdom = str(dom.get("castle") or "")
+                            if cdom.startswith("IBYIll") and len(cdom) >= 1000:
+                                castle2 = cdom
+                except Exception as de:
+                    log(f"[hybrid] post-submit dom: {de}")
+                for attempt in range(3):
+                    try:
+                        live = str(browser.scrape_next_action() or "").strip()
+                        if live:
+                            action_cands.append(live)
+                            log(
+                                f"[hybrid] live next-action after profile={live[:20]}... "
+                                f"(try {attempt+1})"
+                            )
+                            break
+                    except Exception as se:
+                        log(f"[hybrid] scrape_next_action: {se}")
+                    time.sleep(0.8)
             for src in (action, load_next_action_from_capture()):
                 s = str(src or "").strip()
                 if s and s not in action_cands:
                     action_cands.append(s)
+            if not sso and not action_cands:
+                log(
+                    "[hybrid] WARN no next-action id scraped — CreateUser SA fallback skipped; "
+                    "native form may not have fired CreateUser (turnstile React state?)"
+                )
 
             # Prefer browser-context Server Action (same CF cookies / deploy as page)
             if (not sso) and hasattr(browser, "submit_create_user_server_action") and action_cands:

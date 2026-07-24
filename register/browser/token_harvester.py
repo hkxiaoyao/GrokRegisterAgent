@@ -244,6 +244,19 @@ class BrowserTokenSession:
         window.__hybrid_create_email_ok = !!(resp.ok || (resp.status >= 200 && resp.status < 300));
         window.__hybrid_create_email_seen = true;
       }
+      // CreateUser is usually same-origin sign-up Server Action (next-action header)
+      const na = (init && init.headers && (init.headers['next-action'] || init.headers['Next-Action'])) || '';
+      if (na || (String(url).includes('sign-up') && init && typeof init.body === 'string'
+          && init.body.indexOf('createUserAndSessionRequest') >= 0)) {
+        window.__hybrid_create_user_status = resp.status || 0;
+        window.__hybrid_create_user_seen = true;
+        try {
+          const ct = resp.clone();
+          ct.text().then(function(tx){
+            window.__hybrid_create_user_body = String(tx||'').slice(0, 240);
+          }).catch(function(){});
+        } catch (e2) {}
+      }
     } catch (e) {}
     return resp;
   };
@@ -3043,46 +3056,114 @@ return {og, of, op, hasG:!!g, hasF:!!f, hasP:!!p};
         )
         self._lg(f"[*] profile fill: {filled}")
 
-        # Kick CDN/page castle mint so React CreateUser may bind a fresh token
+        # Kick CDN/page castle + re-bind turnstile/conversion into React-ish inputs
         try:
             self._kick_page_castle_mint(page)
-            time.sleep(0.6)
+            time.sleep(0.5)
         except Exception:
             pass
+        try:
+            page.run_js(
+                r"""
+(function(){
+  // re-assert turnstile into all response inputs + fire events React may listen
+  const tok = String(window.__hybrid_turnstile || '');
+  const castle = String(window.__hybrid_castle || '');
+  const conv = String(window.__hybrid_conversion_id || '');
+  function setNamed(name, val){
+    if(!val) return 0;
+    let n=0;
+    for (const el of document.querySelectorAll(
+      'input[name="'+name+'"], textarea[name="'+name+'"], input[id="'+name+'"]'
+    )) {
+      try {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set
+          || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')?.set;
+        if (setter) setter.call(el, val); else el.value = val;
+        el.dispatchEvent(new Event('input',{bubbles:true}));
+        el.dispatchEvent(new Event('change',{bubbles:true}));
+        n++;
+      } catch(e){}
+    }
+    return n;
+  }
+  if (tok) {
+    setNamed('cf-turnstile-response', tok);
+    try {
+      if (typeof turnstile !== 'undefined' && turnstile.getResponse) {
+        /* native may already hold it */
+      }
+    } catch(e){}
+  }
+  if (castle) setNamed('castleRequestToken', castle);
+  if (conv) setNamed('conversionId', conv);
+  // enable submit buttons that were disabled pending challenge
+  for (const b of document.querySelectorAll('button[type="submit"], button')) {
+    try {
+      const t=((b.innerText||'')+'').toLowerCase();
+      if (/complete|sign up|create|注册/.test(t)) {
+        b.removeAttribute('disabled');
+        b.disabled=false;
+        b.setAttribute('aria-disabled','false');
+      }
+    } catch(e){}
+  }
+  return {
+    ts: tok.length,
+    castle: castle.length,
+    conv: conv.slice(0,8),
+  };
+})();
+"""
+            )
+        except Exception as e:
+            self._lg(f"[Debug] pre-submit rebind: {e}")
 
-        # Prefer submit button (Create account / Sign up / Continue)
-        # Include "Complete sign up" (accounts.x.ai 2026 profile CTA)
-        clicked = ""
-        for label in (
-            "Complete sign up",
-            "Complete Sign up",
-            "Create account",
-            "Create Account",
-            "Sign up",
-            "Sign Up",
-            "Continue",
-            "Submit",
-            "注册",
-            "创建账号",
-            "继续",
-        ):
-            try:
-                el = page.ele(
-                    f"xpath://button[normalize-space(.)='{label}']", timeout=0.4
-                )
-                if el:
-                    try:
-                        el.click(by_js=False)
-                    except Exception:
-                        el.click()
-                    clicked = label
-                    break
-            except Exception:
-                continue
-        if not clicked:
-            try:
-                clicked = page.run_js(
-                    r"""
+        def _click_complete() -> str:
+            clicked_local = ""
+            for label in (
+                "Complete sign up",
+                "Complete Sign up",
+                "Create account",
+                "Create Account",
+                "Sign up",
+                "Sign Up",
+                "Continue",
+                "Submit",
+                "注册",
+                "创建账号",
+                "继续",
+            ):
+                try:
+                    el = page.ele(
+                        f"xpath://button[normalize-space(.)='{label}']", timeout=0.35
+                    )
+                    if el:
+                        # CDP-ish center click when possible
+                        try:
+                            box = el.rect
+                            if box is not None:
+                                try:
+                                    page.actions.move_to(el).click()
+                                    clicked_local = label
+                                    break
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+                        try:
+                            el.click(by_js=False)
+                        except Exception:
+                            el.click()
+                        clicked_local = label
+                        break
+                except Exception:
+                    continue
+            if not clicked_local:
+                try:
+                    clicked_local = (
+                        page.run_js(
+                            r"""
 function isVisible(n) {
   if (!n) return false;
   const s = window.getComputedStyle(n);
@@ -3090,30 +3171,44 @@ function isVisible(n) {
   const r = n.getBoundingClientRect();
   return r.width > 0 && r.height > 0;
 }
-const deny = /google|apple|github|x\.com|twitter|sign\s*in|log\s*in/i;
+const deny = /google|apple|github|x\.com|twitter|sign\s*in|log\s*in|cookie|preference|allow all|reject/i;
 const ok = /complete|create|sign\s*up|continue|submit|注册|创建|继续/i;
 const btns = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).filter(isVisible);
 const t = btns.find((b) => {
   const text = (b.innerText || b.value || b.textContent || '').trim();
-  if (!text || deny.test(text)) return false;
+  if (!text || deny.test(text) || text.length > 40) return false;
   return ok.test(text);
 });
-if (t) { t.click(); return (t.innerText || t.value || '').trim().slice(0, 40); }
-return '';
+if (!t) {
+  const form = document.querySelector('form');
+  if (form) {
+    try { if (form.requestSubmit) form.requestSubmit(); else form.submit(); return 'form.requestSubmit'; } catch(e) {}
+  }
+  return '';
+}
+try { t.removeAttribute('disabled'); t.disabled=false; } catch(e){}
+t.focus();
+t.click();
+// also requestSubmit from owning form
+try {
+  const f = t.form || t.closest('form');
+  if (f && f.requestSubmit) f.requestSubmit(t);
+} catch(e){}
+return (t.innerText || t.value || '').trim().slice(0, 40);
 """
-                ) or ""
-            except Exception as e:
-                self._lg(f"[!] profile submit js: {e}")
-        self._lg(f"[*] profile submit click={clicked!r}")
-        # Log whether fetch-hook patched CreateUser castle/conversionId
-        try:
-            meta = page.run_js("return window.__hybrid_create_user_meta || null;")
-            if meta:
-                self._lg(f"[*] createUser wire meta: {meta}")
-        except Exception:
-            pass
+                        )
+                        or ""
+                    )
+                except Exception as e:
+                    self._lg(f"[!] profile submit js: {e}")
+            return str(clicked_local or "")
 
-        deadline = time.time() + max(15.0, float(timeout or 45))
+        clicked = _click_complete()
+        self._lg(f"[*] profile submit click={clicked!r}")
+
+        deadline = time.time() + max(18.0, float(timeout or 45))
+        reclick_at = time.time() + 8.0
+        saw_create = False
         while time.time() < deadline:
             try:
                 cookies = self.export_cookies() or {}
@@ -3123,28 +3218,66 @@ return '';
             if sso and len(sso) > 40:
                 self._lg(f"[*] profile submit got sso len={len(sso)}")
                 try:
-                    meta = page.run_js("return window.__hybrid_create_user_meta || null;")
+                    meta = page.run_js(
+                        "return window.__hybrid_create_user_meta || null;"
+                    )
                     if meta:
                         self._lg(f"[*] createUser wire meta final: {meta}")
                 except Exception:
                     pass
                 return sso
-            # also read document.cookie
             try:
                 page = _get_page() or page
-                js_sso = page.run_js(
+                snap = page.run_js(
                     r"""
 const m = document.cookie.match(/(?:^|;\s*)sso=([^;]+)/);
-return m ? decodeURIComponent(m[1]) : '';
+const sso = m ? decodeURIComponent(m[1]) : '';
+const meta = window.__hybrid_create_user_meta || null;
+const net = (window.__hybrid_net || []).slice(-6);
+const body = ((document.body && document.body.innerText) || '').replace(/\s+/g,' ').trim().slice(0,180);
+const err = Array.from(document.querySelectorAll('[role=alert],p,span,div'))
+  .map(n=>(n.innerText||'').trim())
+  .filter(t=>t && t.length<120 && /error|invalid|failed|try again|something went wrong|required|denied/i.test(t))
+  .slice(0,4);
+const ts = String((document.querySelector('input[name="cf-turnstile-response"]')||{}).value||'').length;
+return {
+  ssoLen: sso ? sso.length : 0,
+  sso: sso && sso.length>40 ? sso : '',
+  meta, net, body, err, ts, url: location.href.slice(0,120),
+};
 """
                 )
-                if js_sso and len(str(js_sso)) > 40:
-                    self._lg(f"[*] profile submit sso from document.cookie len={len(str(js_sso))}")
-                    return str(js_sso)
+                if isinstance(snap, dict):
+                    if snap.get("sso") and len(str(snap.get("sso"))) > 40:
+                        self._lg(
+                            f"[*] profile submit sso from document.cookie len={len(str(snap.get('sso')))}"
+                        )
+                        return str(snap.get("sso"))
+                    if snap.get("meta"):
+                        saw_create = True
+                        self._lg(f"[*] createUser wire meta: {snap.get('meta')}")
+                    # once, log diagnostics if stuck
+                    if int(time.time()) % 7 == 0:
+                        self._lg(
+                            f"[Debug] profile wait url={snap.get('url')} ts={snap.get('ts')} "
+                            f"err={snap.get('err')} body={str(snap.get('body') or '')[:80]!r}"
+                        )
             except Exception:
                 pass
-            time.sleep(0.8)
-        self._lg("[!] profile submit: no sso cookie")
+            # re-click once if no CreateUser wire after ~8s
+            if (not saw_create) and time.time() >= reclick_at:
+                reclick_at = deadline + 1  # only once
+                self._lg("[*] profile submit re-click Complete (no CreateUser wire yet)")
+                try:
+                    _click_complete()
+                except Exception as e:
+                    self._lg(f"[Debug] re-click: {e}")
+            time.sleep(0.7)
+        try:
+            meta = page.run_js("return window.__hybrid_create_user_meta || null;")
+            self._lg(f"[!] profile submit: no sso cookie meta={meta}")
+        except Exception:
+            self._lg("[!] profile submit: no sso cookie")
         return ""
 
 
