@@ -15,6 +15,27 @@ CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"
 ISSUER = "https://auth.x.ai"
 DEVICE_CODE_URL = f"{ISSUER}/oauth2/device/code"
 TOKEN_URL = f"{ISSUER}/oauth2/token"
+
+def _sso_only_headers(sso: str, *, referer: str, origin: str = "https://accounts.x.ai") -> dict:
+    """verify/approve 只带 sso，避免 session 里 cf_clearance 污染导致 invalid_grant。
+
+    参考 srcback desensitized protocol_mint._sso_form_headers 注释。
+    """
+    sso = str(sso or "").strip()
+    return {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Origin": origin,
+        "Referer": referer,
+        "Cookie": f"sso={sso}",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-site",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+    }
+
+
 VERIFY_URL = f"{ISSUER}/oauth2/device/verify"
 APPROVE_URL = f"{ISSUER}/oauth2/device/approve"
 SCOPE = (
@@ -131,11 +152,7 @@ def mint_tokens_device_flow(
                 vr = s.post(
                     verify_url,
                     data={"user_code": user_code},
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Origin": "https://accounts.x.ai",
-                        "Referer": vcomplete,
-                    },
+                    headers=_sso_only_headers(sso, referer=vcomplete),
                     impersonate="chrome120",
                     timeout=20,
                     allow_redirects=True,
@@ -193,12 +210,7 @@ def mint_tokens_device_flow(
                         # 关键：approve 带 referrer 才签进 access_token
                         "referrer": GROK_REFERRER,
                     },
-                    headers={
-                        "Content-Type": "application/x-www-form-urlencoded",
-                        "Origin": "https://accounts.x.ai",
-                        "Referer": consent_ref,
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-                    },
+                    headers=_sso_only_headers(sso, referer=consent_ref),
                     impersonate="chrome120",
                     timeout=20,
                     allow_redirects=False,

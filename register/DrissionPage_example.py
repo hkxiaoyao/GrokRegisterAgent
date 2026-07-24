@@ -1763,6 +1763,41 @@ return true;
 
 
 
+
+def _pure_browser_pause(min_ms: int = 400, max_ms: int = 1200) -> None:
+    """纯浏览器模式加长拟人停顿；非 pure 时用普通 _step_pause。"""
+    if _pure_browser_mode():
+        try:
+            _step_pause(min_ms, max_ms)
+        except Exception:
+            import random, time as _t
+            _t.sleep(random.uniform(min_ms/1000, max_ms/1000))
+    else:
+        try:
+            _step_pause(min(min_ms, 250), min(max_ms, 800))
+        except Exception:
+            pass
+
+def _pure_browser_mouse_wander(steps: int | None = None) -> None:
+    """pure 模式 CDP 指针游走（无 JS 合成 MouseEvent）。"""
+    if not _pure_browser_mode():
+        return
+    try:
+        import random as _r
+        n = int(steps if steps is not None else (8 + secrets.randbelow(10)))
+        x = 140.0 + _r.random() * 520
+        y = 160.0 + _r.random() * 340
+        for _i in range(max(3, n)):
+            x += _r.uniform(-40, 70)
+            y += _r.uniform(-25, 45)
+            x = max(8.0, min(1400.0, x))
+            y = max(8.0, min(900.0, y))
+            page.run_cdp("Input.dispatchMouseEvent", type="mouseMoved", x=float(x), y=float(y))
+            time.sleep(0.015 + _r.random() * 0.04)
+    except Exception:
+        pass
+
+
 def _pure_browser_mode() -> bool:
     """True = Plan A/B 禁用协议 CreateEmail/Verify + hybrid 收尾，走纯 UI。
 
@@ -1795,6 +1830,35 @@ def fill_email_and_submit(timeout=15):
     # 优先协议发码（UI 自动化常 Something went wrong）。pure_browser 强制走 UI 以绑定 React castle。
     if _pure_browser_mode():
         print("[*] pure_browser=1 · 跳过协议 CreateEmail，走 UI 发码", flush=True)
+        _pure_browser_pause(800, 2200)
+        # CDP 真实鼠标轨迹（比 JS 合成 MouseEvent 更像真人；Castle 看 pointer 流）
+        try:
+            import random as _rnd
+
+            x0 = 120 + _rnd.randint(0, 420)
+            y0 = 140 + _rnd.randint(0, 280)
+            x1 = x0 + _rnd.randint(-80, 160)
+            y1 = y0 + _rnd.randint(-40, 120)
+            steps = 10 + _rnd.randint(0, 10)
+            for i in range(1, steps + 1):
+                t = i / steps
+                ease = t * t * (3 - 2 * t)
+                page.run_cdp(
+                    "Input.dispatchMouseEvent",
+                    type="mouseMoved",
+                    x=float(x0 + (x1 - x0) * ease + _rnd.uniform(-1.5, 1.5)),
+                    y=float(y0 + (y1 - y0) * ease + _rnd.uniform(-1.5, 1.5)),
+                )
+                time.sleep(0.012 + _rnd.random() * 0.025)
+            try:
+                page.run_js(
+                    "try{window.scrollBy(0, 18+Math.floor(Math.random()*50));}catch(e){} true;"
+                )
+            except Exception:
+                pass
+        except Exception as _me:
+            print(f"[Warn] pure mouse wander: {_me}", flush=True)
+        _pure_browser_pause(400, 1200)
     else:
         try:
             from protocol_mail import protocol_create_email_code as _pce
@@ -1910,9 +1974,20 @@ return { x: r.x + r.width / 2, y: r.y + r.height / 2, val: String(input.value ||
                 windowsVirtualKeyCode=8,
             )
             time.sleep(0.05)
+            pure = False
+            try:
+                pure = _pure_browser_mode()
+            except Exception:
+                pure = False
             for ch in str(value):
                 page.run_cdp("Input.insertText", text=ch)
-                time.sleep(0.012 + secrets.randbelow(18) / 1000.0)
+                if pure:
+                    # 拟人：更慢、方差更大，偶发短停
+                    time.sleep(0.045 + secrets.randbelow(90) / 1000.0)
+                    if secrets.randbelow(12) == 0:
+                        time.sleep(0.12 + secrets.randbelow(25) / 100.0)
+                else:
+                    time.sleep(0.012 + secrets.randbelow(18) / 1000.0)
             time.sleep(0.15)
             cur = page.run_js(
                 r"""
@@ -2293,7 +2368,11 @@ return merged === code ? 'filled' : 'box-mismatch';
             continue
 
         if filled == 'filled':
-            time.sleep(1.2)
+            if _pure_browser_mode():
+                _pure_browser_pause(700, 1800)
+                _pure_browser_mouse_wander(6)
+            else:
+                time.sleep(1.2)
             try:
                 clicked = page.run_js(
                     r"""
@@ -3539,6 +3618,16 @@ def fill_profile_and_submit(timeout=None, *, mode: str = "a"):
     turnstile_token = ""
     turnstile_attempted = False
 
+    pure_ab = False
+    try:
+        pure_ab = _pure_browser_mode() and not plan_b
+    except Exception:
+        pure_ab = False
+    if pure_ab:
+        print("[pure] 资料页：加长拟人停顿 + 指针游走", flush=True)
+        _pure_browser_pause(900, 2200)
+        _pure_browser_mouse_wander(10)
+
     if plan_b:
         print("[plan-b] 资料页：拟人延迟 + 等人机成功证据后再提交")
         try:
@@ -3709,6 +3798,37 @@ return String(givenInput.value || '').trim() === String(expectedGiven || '').tri
             time.sleep(0.5)
             continue
 
+        if pure_ab:
+            _pure_browser_pause(500, 1400)
+            _pure_browser_mouse_wander(7)
+            # 逐字段再 CDP 轻触焦点（行为流），不改值
+            try:
+                for sel in (
+                    'input[name="givenName"], input[autocomplete="given-name"]',
+                    'input[name="familyName"], input[autocomplete="family-name"]',
+                    'input[name="password"], input[type="password"]',
+                ):
+                    box = page.run_js(
+                        """
+const n=document.querySelector(arguments[0]);
+if(!n) return null;
+const r=n.getBoundingClientRect();
+if(r.width<=0) return null;
+n.focus();
+return {x:r.x+r.width/2,y:r.y+r.height/2};
+""",
+                        sel,
+                    )
+                    if isinstance(box, dict):
+                        try:
+                            _cdp_human_click(float(box["x"]), float(box["y"]))
+                        except Exception:
+                            pass
+                        time.sleep(0.15 + secrets.randbelow(25) / 100.0)
+            except Exception:
+                pass
+            _pure_browser_pause(400, 1100)
+
         turnstile_state = page.run_js(
             """
 const challengeInput = document.querySelector('input[name="cf-turnstile-response"]');
@@ -3776,7 +3896,11 @@ return value ? 'ready' : 'pending';
                 _inject_turnstile_token(extra)
                 print("[*] Turnstile 二次复用完成。")
 
-        time.sleep(0.6 if not plan_b else 0.9)
+        if pure_ab:
+            _pure_browser_pause(700, 1800)
+            _pure_browser_mouse_wander(8)
+        else:
+            time.sleep(0.6 if not plan_b else 0.9)
 
         clicked = False
         if plan_b:
@@ -4404,6 +4528,13 @@ return 'submitted';
 
         time.sleep(0.6)
 
+    # 超时前再确认弹窗是否已消失（可能已提交成功但写年校验失败）
+    try:
+        if not detect_age_gate():
+            print(f"[*] 年龄门：超时复查弹窗已消失，视为成功（年 {year_s}）")
+            return True
+    except Exception:
+        pass
     print(f"[Warn] 年龄门：处理超时（目标年 {year_s}）")
     return False
 
@@ -4433,188 +4564,394 @@ def _random_age_gate_message() -> str:
 
 
 def send_chat_message(text: str | None = None, timeout: float = 20) -> bool:
-    """在 grok.com 输入框发送一条消息（用于触发生日/年龄门）。默认随机英文。"""
+    """在 grok.com 输入框发送一条消息（用于触发生日/年龄门）。默认随机英文。
+
+    Grok 新 UI：合成 KeyboardEvent 的 Enter 无效；发送钮是圆形 ↑（无 Send 文案）。
+    必须：填入 → CDP 点 ↑ / 真 Enter → 校验输入框已清空，禁止假成功 sent-enter。
+    """
     global page
     msg = str(text or "").strip() or _random_age_gate_message()
     deadline = time.time() + timeout
     print(f"[*] 发送聊天消息以触发年龄门: {msg!r}")
 
+    def _composer_snapshot():
+        try:
+            return page.run_js(
+                r"""
+function isVisible(n) {
+  if (!n) return false;
+  const s = window.getComputedStyle(n);
+  if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return false;
+  const r = n.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+function isEditableBox(n) {
+  if (!n || n.disabled || n.readOnly) return false;
+  const tag = (n.tagName || '').toUpperCase();
+  if (tag === 'TEXTAREA' || tag === 'INPUT') return true;
+  if (n.isContentEditable) return true;
+  if (String(n.getAttribute('contenteditable') || '').toLowerCase() === 'true') return true;
+  if (String(n.getAttribute('role') || '').toLowerCase() === 'textbox') return true;
+  return false;
+}
+const raw = Array.from(document.querySelectorAll(
+  'textarea, input[type="text"], input:not([type]), [contenteditable="true"], [contenteditable=""], div[role="textbox"], [role="textbox"]'
+)).filter((n) => isVisible(n) && isEditableBox(n));
+const scored = raw.map((n) => {
+  const meta = [n.placeholder, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.name, n.id].join(' ');
+  if (/year|birth|年龄|出生/i.test(meta)) return null;
+  const r = n.getBoundingClientRect();
+  if (r.width < 80 || r.height < 18) return null;
+  const tag = (n.tagName || '').toUpperCase();
+  let score = r.width * r.height;
+  if (tag === 'TEXTAREA') score += 1e7;
+  if (tag === 'INPUT') score += 5e6;
+  if (n.isContentEditable || String(n.getAttribute('role') || '') === 'textbox') score += 1e6;
+  score += (r.top / Math.max(window.innerHeight, 1)) * 1e5;
+  return { n, score, r };
+}).filter(Boolean);
+scored.sort((a, b) => b.score - a.score);
+const input = scored.length ? scored[0].n : null;
+if (!input) return { ok: false, why: 'no-input' };
+const r = input.getBoundingClientRect();
+const val = String(input.value || input.innerText || input.textContent || '').replace(/\s+/g, ' ').trim();
+const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).filter(isVisible);
+let send = null;
+let sendScore = -1;
+for (const b of buttons) {
+  if (b.disabled || b.getAttribute('aria-disabled') === 'true') continue;
+  const br = b.getBoundingClientRect();
+  const label = [
+    b.getAttribute('aria-label') || '',
+    b.getAttribute('data-testid') || '',
+    b.getAttribute('title') || '',
+    b.innerText || '',
+  ].join(' ').replace(/\s+/g, ' ').trim();
+  const tl = label.toLowerCase();
+  if (/fast|auto|attach|upload|plus|microphone|voice|record|image|file|model/i.test(tl)
+      && !/send|submit|提交|发送/i.test(tl)) {
+    continue;
+  }
+  let s = 0;
+  if (/^send$|submit|发送|提交/i.test(tl)) s += 200;
+  if (/send|submit/i.test(tl)) s += 120;
+  if (br.width >= 28 && br.width <= 64 && br.height >= 28 && br.height <= 64) s += 40;
+  if (Math.abs((br.top + br.height / 2) - (r.top + r.height / 2)) < 80) s += 50;
+  if (br.left > r.left + r.width * 0.5) s += 30;
+  if (br.left > r.right - 20) s += 20;
+  if (b.querySelector('svg, path')) s += 15;
+  if (s > sendScore) { sendScore = s; send = b; }
+}
+let sendBox = null;
+if (send && sendScore >= 40) {
+  const br = send.getBoundingClientRect();
+  sendBox = {
+    x: br.x + br.width / 2,
+    y: br.y + br.height / 2,
+    w: br.width,
+    h: br.height,
+    label: (send.getAttribute('aria-label') || send.innerText || '').slice(0, 40),
+    score: sendScore,
+  };
+}
+return {
+  ok: true,
+  val,
+  inputBox: { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height },
+  sendBox,
+};
+"""
+            )
+        except Exception as e:
+            return {"ok": False, "why": f"snap:{e}"}
+
+    def _fill_composer(value: str) -> str:
+        try:
+            return str(
+                page.run_js(
+                    r"""
+const msg = String(arguments[0] || '');
+function isVisible(n) {
+  if (!n) return false;
+  const s = window.getComputedStyle(n);
+  if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return false;
+  const r = n.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+function isEditableBox(n) {
+  if (!n || n.disabled || n.readOnly) return false;
+  const tag = (n.tagName || '').toUpperCase();
+  if (tag === 'TEXTAREA' || tag === 'INPUT') return true;
+  if (n.isContentEditable) return true;
+  if (String(n.getAttribute('contenteditable') || '').toLowerCase() === 'true') return true;
+  if (String(n.getAttribute('role') || '').toLowerCase() === 'textbox') return true;
+  return false;
+}
+function fillChatInput(el, value) {
+  const tag = (el.tagName || '').toUpperCase();
+  const isNativeField = tag === 'TEXTAREA' || tag === 'INPUT';
+  el.focus();
+  try { el.click(); } catch (e) {}
+  if (isNativeField) {
+    const proto = tag === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+    const tracker = el._valueTracker;
+    if (tracker) { try { tracker.setValue(''); } catch (e) {} }
+    if (nativeSetter) { nativeSetter.call(el, ''); nativeSetter.call(el, value); }
+    else { el.value = value; }
+    el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return String(el.value || '') === String(value) ? 'native-ok' : 'native-mismatch';
+  }
+  try {
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } catch (e) {}
+  try {
+    if (document.execCommand) {
+      document.execCommand('selectAll', false, null);
+      document.execCommand('insertText', false, value);
+      if ((el.innerText || el.textContent || '').includes(value)) return 'ce-exec';
+    }
+  } catch (e) {}
+  try {
+    el.textContent = value;
+    if (!(el.innerText || el.textContent || '').trim()) {
+      el.innerHTML = '';
+      el.appendChild(document.createTextNode(value));
+    }
+    el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+    el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return (el.innerText || el.textContent || '').includes(value) ? 'ce-dom' : 'ce-fail';
+  } catch (e) {
+    return 'ce-err';
+  }
+}
+const raw = Array.from(document.querySelectorAll(
+  'textarea, input[type="text"], input:not([type]), [contenteditable="true"], [contenteditable=""], div[role="textbox"], [role="textbox"]'
+)).filter((n) => isVisible(n) && isEditableBox(n));
+const scored = raw.map((n) => {
+  const meta = [n.placeholder, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.name, n.id].join(' ');
+  if (/year|birth|年龄|出生/i.test(meta)) return null;
+  const r = n.getBoundingClientRect();
+  if (r.width < 80 || r.height < 18) return null;
+  const tag = (n.tagName || '').toUpperCase();
+  let score = r.width * r.height;
+  if (tag === 'TEXTAREA') score += 1e7;
+  if (tag === 'INPUT') score += 5e6;
+  if (n.isContentEditable || String(n.getAttribute('role') || '') === 'textbox') score += 1e6;
+  score += (r.top / Math.max(window.innerHeight, 1)) * 1e5;
+  return { n, score };
+}).filter(Boolean);
+scored.sort((a, b) => b.score - a.score);
+if (!scored.length) return 'no-input';
+return fillChatInput(scored[0].n, msg);
+""",
+                    value,
+                )
+                or "no-result"
+            )
+        except Exception as e:
+            return f"fill-err:{e}"
+
+    def _cdp_press_enter() -> None:
+        for typ in ("keyDown", "keyUp"):
+            kwargs = dict(
+                type=typ,
+                key="Enter",
+                code="Enter",
+                windowsVirtualKeyCode=13,
+                nativeVirtualKeyCode=13,
+            )
+            if typ == "keyDown":
+                kwargs["text"] = "\r"
+                kwargs["unmodifiedText"] = "\r"
+            page.run_cdp("Input.dispatchKeyEvent", **kwargs)
+            time.sleep(0.03)
+
+    def _cdp_click_xy(x: float, y: float) -> None:
+        try:
+            _cdp_human_click(float(x), float(y))
+        except Exception:
+            page.run_cdp(
+                "Input.dispatchMouseEvent",
+                type="mousePressed",
+                x=float(x),
+                y=float(y),
+                button="left",
+                buttons=1,
+                clickCount=1,
+            )
+            time.sleep(0.04)
+            page.run_cdp(
+                "Input.dispatchMouseEvent",
+                type="mouseReleased",
+                x=float(x),
+                y=float(y),
+                button="left",
+                buttons=0,
+                clickCount=1,
+            )
+
+    def _send_verified(msg_text: str) -> bool:
+        """发送后必须验证：输入框不再包含原文。"""
+        snap = _composer_snapshot()
+        if not isinstance(snap, dict) or not snap.get("ok"):
+            return False
+        val = str(snap.get("val") or "")
+        if not val:
+            return True
+        if msg_text not in val and len(val) < max(2, len(msg_text) // 2):
+            return True
+        try:
+            hit = page.run_js(
+                r"""
+const msg = String(arguments[0] || '');
+const editable = document.activeElement;
+const nodes = Array.from(document.querySelectorAll('[data-testid], article, div, p, span'))
+  .filter((n) => {
+    const t = (n.innerText || n.textContent || '').trim();
+    return t === msg || t.startsWith(msg);
+  })
+  .slice(0, 12);
+for (const n of nodes) {
+  if (editable && (n === editable || editable.contains(n) || n.contains(editable))) continue;
+  const r = n.getBoundingClientRect();
+  if (r.width > 20 && r.height > 10) return true;
+}
+const suggest = Array.from(document.querySelectorAll('button, a, div')).some((n) => {
+  const t = (n.innerText || '').toLowerCase();
+  return t.includes('explain the correct usage') || t.includes('general kenobi');
+});
+// 建议还在 + 输入框仍有字 → 未发送
+return false;
+""",
+                msg_text,
+            )
+            return bool(hit)
+        except Exception:
+            return False
+
     while time.time() < deadline:
         try:
             refresh_active_page()
-            # 若年龄门已在，无需再发
             if detect_age_gate():
                 print("[*] 发送前已检测到年龄门，跳过发消息")
                 return True
 
-            result = page.run_js(
-                r"""
-const msg = String(arguments[0] || '');
+            filled = _fill_composer(msg)
+            if filled == "no-input":
+                if detect_age_gate():
+                    print("[*] 发消息时检测到年龄门")
+                    return True
+                print("[Debug] 发消息状态: no-input")
+                time.sleep(0.8)
+                continue
+            if any(x in str(filled) for x in ("fail", "err", "mismatch")):
+                print(f"[Debug] 填入聊天框: {filled}")
+                time.sleep(0.5)
+                continue
 
-function isVisible(n) {
-    if (!n) return false;
-    const s = window.getComputedStyle(n);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
-    const r = n.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
-}
+            snap = _composer_snapshot()
+            how = ""
+            # 1) 优先点圆形 ↑ 发送钮
+            if isinstance(snap, dict) and isinstance(snap.get("sendBox"), dict):
+                sb = snap["sendBox"]
+                try:
+                    _cdp_click_xy(float(sb["x"]), float(sb["y"]))
+                    how = f"cdp-send-btn:{(sb.get('label') or '')}@{int(sb['x'])},{int(sb['y'])}"
+                except Exception as e:
+                    how = f"cdp-send-btn-fail:{e}"
 
-function isEditableBox(n) {
-    if (!n) return false;
-    if (n.disabled || n.readOnly) return false;
-    const tag = (n.tagName || '').toUpperCase();
-    if (tag === 'TEXTAREA' || tag === 'INPUT') return true;
-    if (n.isContentEditable) return true;
-    if (String(n.getAttribute('contenteditable') || '').toLowerCase() === 'true') return true;
-    if (String(n.getAttribute('role') || '').toLowerCase() === 'textbox') return true;
-    return false;
-}
-
-/** 写入聊天框：contenteditable div 绝不能走 Input.value setter（会 Illegal invocation） */
-function fillChatInput(el, value) {
-    const tag = (el.tagName || '').toUpperCase();
-    const isNativeField = tag === 'TEXTAREA' || tag === 'INPUT';
-    const isCE = !!(el.isContentEditable || String(el.getAttribute('contenteditable') || '').toLowerCase() === 'true'
-        || (String(el.getAttribute('role') || '').toLowerCase() === 'textbox' && !isNativeField));
-
-    el.focus();
-    try { el.click(); } catch (e) {}
-
-    if (isNativeField) {
-        const proto = tag === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-        const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-        const tracker = el._valueTracker;
-        if (tracker) {
-            try { tracker.setValue(''); } catch (e) {}
-        }
-        if (nativeSetter) {
-            nativeSetter.call(el, '');
-            nativeSetter.call(el, value);
-        } else {
-            el.value = value;
-        }
-        el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
-        el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        return String(el.value || '') === String(value);
-    }
-
-    // contenteditable / role=textbox（Grok 主输入是 HTMLDivElement）
-    try {
-        const sel = window.getSelection();
-        const range = document.createRange();
-        range.selectNodeContents(el);
-        sel.removeAllRanges();
-        sel.addRange(range);
-    } catch (e) {}
-
-    let ok = false;
-    // 1) execCommand 最接近真实输入，React/ProseMirror 常能接到
-    try {
-        if (document.execCommand) {
-            document.execCommand('selectAll', false, null);
-            document.execCommand('insertText', false, value);
-            ok = (el.innerText || el.textContent || '').includes(value)
-                || (el.innerText || el.textContent || '').trim().length > 0;
-        }
-    } catch (e) {}
-
-    // 2) 直接写 DOM + 事件
-    if (!ok) {
-        try {
-            el.textContent = '';
-            el.textContent = value;
-            // 部分编辑器吃 innerHTML
-            if (!(el.innerText || el.textContent || '').trim()) {
-                el.innerHTML = '';
-                el.appendChild(document.createTextNode(value));
-            }
-            el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
-            el.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
-            el.dispatchEvent(new Event('change', { bubbles: true }));
-            ok = (el.innerText || el.textContent || '').includes(value)
-                || (el.innerText || el.textContent || '').trim().length > 0;
-        } catch (e) {
-            return false;
-        }
-    }
-    return ok;
-}
-
-// 候选：textarea / input 优先，再 contenteditable / role=textbox
-const raw = Array.from(document.querySelectorAll(
-    'textarea, input[type="text"], input:not([type]), [contenteditable="true"], [contenteditable=""], div[role="textbox"], [role="textbox"]'
-)).filter((n) => isVisible(n) && isEditableBox(n));
-
-const scored = raw.map((n) => {
-    const meta = [n.placeholder, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.name, n.id].join(' ');
-    if (/year|birth|年龄|出生/i.test(meta)) return null;
-    const r = n.getBoundingClientRect();
-    if (r.width < 100 || r.height < 20) return null;
-    const tag = (n.tagName || '').toUpperCase();
-    let score = r.width * r.height;
-    if (tag === 'TEXTAREA') score += 1e7;
-    if (tag === 'INPUT') score += 5e6;
-    if (n.isContentEditable || String(n.getAttribute('role') || '') === 'textbox') score += 1e6;
-    // 页面下半部的输入框更像主聊天框
-    score += (r.top / Math.max(window.innerHeight, 1)) * 1e5;
-    return { n, score };
-}).filter(Boolean);
-
-scored.sort((a, b) => b.score - a.score);
-const input = scored.length ? scored[0].n : null;
-
-if (!input) {
-    return 'no-input';
-}
-
-const ok = fillChatInput(input, msg);
-if (!ok) return 'fill-failed';
-
-// Enter 发送
-const enterOpts = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true };
-input.dispatchEvent(new KeyboardEvent('keydown', enterOpts));
-input.dispatchEvent(new KeyboardEvent('keypress', enterOpts));
-input.dispatchEvent(new KeyboardEvent('keyup', enterOpts));
-
-// 发送按钮
-const buttons = Array.from(document.querySelectorAll('button, [role="button"]')).filter(isVisible);
-const sendBtn = buttons.find((n) => {
-    const label = (n.innerText || n.textContent || n.getAttribute('aria-label') || n.getAttribute('data-testid') || '').replace(/\s+/g, '');
-    const t = label.toLowerCase();
-    return t === 'send' || label === '发送' || label.includes('发送')
-        || /send/i.test(n.getAttribute('aria-label') || '')
-        || /send/i.test(n.getAttribute('data-testid') || '');
+            # 2) CDP 真 Enter（合成 KeyboardEvent 无效）
+            need_enter = (not how.startswith("cdp-send-btn:")) or ("fail" in how)
+            if need_enter or True:
+                # 即使点了发送钮也补一次 Enter，双保险
+                try:
+                    if isinstance(snap, dict) and isinstance(snap.get("inputBox"), dict):
+                        ib = snap["inputBox"]
+                        try:
+                            _cdp_click_xy(float(ib["x"]), float(ib["y"]))
+                            time.sleep(0.06)
+                        except Exception:
+                            pass
+                    # 重新 focus 后再 Enter：点发送钮后焦点可能丢
+                    if how.startswith("cdp-send-btn:") and "fail" not in how:
+                        time.sleep(0.35)
+                        if _send_verified(msg):
+                            print(f"[*] 聊天消息已发送（{how}）")
+                            time.sleep(0.8)
+                            return True
+                        # 发送钮可能没点中，再 Enter
+                        if isinstance(snap, dict) and isinstance(snap.get("inputBox"), dict):
+                            ib = snap["inputBox"]
+                            try:
+                                _cdp_click_xy(float(ib["x"]), float(ib["y"]))
+                                time.sleep(0.05)
+                            except Exception:
+                                pass
+                    _cdp_press_enter()
+                    how = (how + "+" if how else "") + "cdp-enter"
+                except Exception as e:
+                    how = (how + "+" if how else "") + f"cdp-enter-fail:{e}"
+                    try:
+                        page.run_js(
+                            r"""
+const buttons = Array.from(document.querySelectorAll('button,[role=button]'));
+const b = buttons.find((n) => {
+  if (n.disabled || n.getAttribute('aria-disabled') === 'true') return false;
+  const lab = ((n.getAttribute('aria-label')||'')+(n.getAttribute('data-testid')||'')+(n.innerText||'')).toLowerCase();
+  if (/send|submit|发送|提交/.test(lab)) return true;
+  const r = n.getBoundingClientRect();
+  return r.width>=28 && r.width<=64 && r.height>=28 && r.height<=64 && n.querySelector('svg');
 });
-if (sendBtn && !sendBtn.disabled && sendBtn.getAttribute('aria-disabled') !== 'true') {
-    try { sendBtn.click(); } catch (e) {}
-    return 'sent-click';
-}
-return 'sent-enter';
-                """,
-                msg,
+if (b) { b.click(); return true; }
+return false;
+"""
+                        )
+                        how += "+js-click"
+                    except Exception:
+                        pass
+
+            time.sleep(0.9)
+            if _send_verified(msg):
+                print(f"[*] 聊天消息已发送（{how or 'verified'}）")
+                time.sleep(0.8)
+                return True
+
+            # 再点一次发送钮
+            snap2 = _composer_snapshot()
+            if isinstance(snap2, dict) and isinstance(snap2.get("sendBox"), dict):
+                sb = snap2["sendBox"]
+                try:
+                    _cdp_click_xy(float(sb["x"]), float(sb["y"]))
+                    time.sleep(0.9)
+                    if _send_verified(msg):
+                        print("[*] 聊天消息已发送（retry-send-btn）")
+                        return True
+                except Exception:
+                    pass
+
+            still = ""
+            if isinstance(snap2, dict):
+                still = str(snap2.get("val") or "")[:80]
+            print(
+                f"[Debug] 发消息未确认 how={how} still_in_box={still!r} "
+                f"send={(snap2.get('sendBox') if isinstance(snap2, dict) else None)}"
             )
         except PageDisconnectedError:
             refresh_active_page()
-            result = "disconnected"
         except Exception as e:
-            result = f"error:{e}"
-
-        if result in ("sent-enter", "sent-click"):
-            print(f"[*] 聊天消息已发送（{result}）")
-            time.sleep(1.5)
-            return True
-        if result == "no-input":
-            # 可能还在加载，或年龄门挡住
-            if detect_age_gate():
-                print("[*] 发消息时检测到年龄门")
-                return True
-        else:
-            print(f"[Debug] 发消息状态: {result}")
+            print(f"[Debug] 发消息异常: {e}")
 
         time.sleep(0.8)
 
-    print("[Warn] 发送聊天消息超时（输入框未就绪）")
+    print("[Warn] 发送聊天消息超时（未能确认已发出）")
     return False
 
 
@@ -4885,6 +5222,27 @@ def run_single_registration(
                 )
             else:
                 print(f"[*] 填写注册资料并提交（Plan {plan_mode.upper()}）…")
+                if _pure_browser_mode():
+                    _pure_browser_pause(900, 2400)
+                    # 资料提交前再扰动一次指针（$registration 事件前的行为窗口）
+                    try:
+                        import random as _rnd2
+
+                        sx = 200 + _rnd2.randint(0, 500)
+                        sy = 220 + _rnd2.randint(0, 300)
+                        for _k in range(6 + _rnd2.randint(0, 6)):
+                            page.run_cdp(
+                                "Input.dispatchMouseEvent",
+                                type="mouseMoved",
+                                x=float(sx + _rnd2.randint(-30, 90)),
+                                y=float(sy + _rnd2.randint(-20, 60)),
+                            )
+                            time.sleep(0.02 + _rnd2.random() * 0.04)
+                            sx += _rnd2.randint(-20, 40)
+                            sy += _rnd2.randint(-15, 25)
+                    except Exception:
+                        pass
+                    _pure_browser_pause(400, 1100)
                 try:
                     profile = fill_profile_and_submit(mode=plan_mode)
                 except Exception as pe:

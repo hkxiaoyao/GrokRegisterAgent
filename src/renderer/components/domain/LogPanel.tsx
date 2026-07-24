@@ -1,8 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { ChevronDown, ChevronRight, Copy, Trash2 } from 'lucide-react';
 import { useRunStore } from '@renderer/store/runStore';
+import { useToastStore } from '@renderer/store/toastStore';
 import { Button } from '@renderer/components/ui/Button';
 import { cn } from '@renderer/lib/cn';
+import { copyText } from '@renderer/lib/copyText';
 
 const colorByLevel = {
   /** 注册机常规 stdout（[*] 状态行等）保持蓝色 */
@@ -69,6 +71,7 @@ export function LogPanel() {
   const focusRunId = useRunStore((s) => s.focusRunId);
   const clearLogs = useRunStore((s) => s.clearLogs);
   const clearLogsFor = useRunStore((s) => s.clearLogsFor);
+  const pushToast = useToastStore((s) => s.push);
   const ref = useRef<HTMLDivElement>(null);
   const [autoScroll, setAutoScroll] = useState(true);
   /** all = 全部任务混显；focus = 仅当前聚焦 */
@@ -94,12 +97,38 @@ export function LogPanel() {
     setAutoScroll(atBottom);
   };
 
-  const copyAll = async () => {
-    const text = visible.map((l) => l.text).join('\n');
+  const copyAll = async (e?: MouseEvent) => {
+    // 避免点到标题区折叠按钮的冒泡；复制本身不在折叠 button 内，但防一手
+    e?.preventDefault?.();
+    e?.stopPropagation?.();
+    const text = visible
+      .map((l) => {
+        const t = new Date(l.ts).toLocaleTimeString('zh-CN', {
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: false
+        });
+        const prefix = scope === 'all' ? `#${l.runId.slice(0, 6)} ` : '';
+        return `${t} ${prefix}${l.text}`;
+      })
+      .join('\n');
+    if (!text.trim()) {
+      pushToast({ tone: 'warn', title: '没有可复制的日志' });
+      return;
+    }
     try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      /* ignore */
+      await copyText(text);
+      pushToast({
+        tone: 'ok',
+        title: `已复制 ${visible.length} 行日志`
+      });
+    } catch (err) {
+      pushToast({
+        tone: 'danger',
+        title: '复制失败',
+        description: String(err || 'clipboard unavailable')
+      });
     }
   };
 
@@ -170,7 +199,13 @@ export function LogPanel() {
           <span className={cn('pill', autoScroll ? 'pill-ok' : 'pill-warn')}>
             {autoScroll ? '自动滚动' : '已暂停'}
           </span>
-          <Button variant="ghost" size="sm" onClick={copyAll}>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={(ev) => void copyAll(ev)}
+            title="复制当前可见日志"
+          >
             <Copy className="h-3.5 w-3.5" />
             复制
           </Button>
