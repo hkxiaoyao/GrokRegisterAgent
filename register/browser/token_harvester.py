@@ -6,6 +6,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Optional
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -836,10 +837,11 @@ window.__hybrid_castles = window.__hybrid_castles || [];
 window.__hybrid_castle_status = window.__hybrid_castle_status || '';
 function pushTok(t) {
   const s = String(t || '');
-  if (s.length < 40) return;
+  // Only long IBYIll counts (forum); short junk must not pollute status
+  if (s.indexOf('IBYIll|') !== 0 || s.length < 800) return;
   window.__hybrid_castle = s;
   window.__hybrid_castles.push(s);
-  window.__hybrid_castle_status = s.indexOf('IBYIll|') === 0 ? 'native-ish' : 'minted';
+  window.__hybrid_castle_status = 'native-ish';
 }
 function tryMintUnderscore() {
   try {
@@ -1134,8 +1136,8 @@ true;
         try:
             pk = self._extract_castle_pk() or ""
             self._ensure_castle_sdk(pk)
-            self._lg("[*] pre-email Castle CDN warm started")
-            warm_deadline = time.time() + 6.0
+            self._lg("[*] pre-email Castle CDN warm started (local-cache→_castle)")
+            warm_deadline = time.time() + 12.0
             while time.time() < warm_deadline:
                 try:
                     st = page.run_js(
@@ -1144,7 +1146,9 @@ return {
   len: String(window.__hybrid_castle||'').length,
   head: String(window.__hybrid_castle||'').slice(0,12),
   status: String(window.__hybrid_castle_status||''),
-  has: typeof window._castle==='function'
+  has: typeof window._castle==='function',
+  load: String(window.__hybrid_castle_load||''),
+  err: String(window.__hybrid_castle_err||'').slice(0,80)
 };
 """
                     )
@@ -1155,16 +1159,22 @@ return {
                     if ln >= 1000 and str(st.get("head") or "").startswith("IBYIll"):
                         self._lg(
                             f"[*] pre-email Castle CDN ready len={ln} "
-                            f"st={st.get('status')} has_=_castle={st.get('has')}"
+                            f"st={st.get('status')} has={st.get('has')} "
+                            f"load={st.get('load')}"
                         )
                         break
                     if st.get("status") in ("sdk-fail", "error", "error:_castle"):
                         self._lg(
                             f"[*] pre-email Castle CDN fail st={st.get('status')} "
-                            f"has={st.get('has')}"
+                            f"has={st.get('has')} err={st.get('err')}"
                         )
-                        break
-                time.sleep(0.35)
+                        # retry once: clear script flag and re-ensure
+                        try:
+                            page.run_js("window.__hybrid_castle_script=false; true;")
+                            self._ensure_castle_sdk(pk)
+                        except Exception:
+                            pass
+                time.sleep(0.4)
             else:
                 self._lg("[*] pre-email Castle CDN warm timeout (continue with React mint)")
         except Exception as we:
@@ -1676,13 +1686,44 @@ return '';
             self._lg(f"[Debug] castle pk: {e}")
         return "pk_p8GGWvD3TmFJZRsX3BQcqAv9aFVispNz"
 
-    def _ensure_castle_sdk(self, pk: str) -> bool:
-        """Load Castle CDN v2 and mint via window._castle (NOT window.Castle / npm castle-js).
+    def _local_castle_sdk_source(self) -> str:
+        """Prefer local data/cf-cache/castle_v2.js (forum: avoid cross-origin CDN block)."""
+        candidates = [
+            Path(__file__).resolve().parent.parent / "data" / "cf-cache" / "castle_v2.js",
+            Path(__file__).resolve().parent / "data" / "cf-cache" / "castle_v2.js",
+        ]
+        for p in candidates:
+            try:
+                if p.is_file() and p.stat().st_size > 5000:
+                    return p.read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                continue
+        # One-shot download into first candidate path
+        try:
+            dest = candidates[0]
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            import urllib.request
+            url = (
+                "https://cdn.castle.io/v2/castle.js"
+                "?pk=pk_p8GGWvD3TmFJZRsX3BQcqAv9aFVispNz"
+            )
+            urllib.request.urlretrieve(url, dest)
+            if dest.is_file() and dest.stat().st_size > 5000:
+                self._lg(f"[*] castle SDK downloaded → {dest} bytes={dest.stat().st_size}")
+                return dest.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            try:
+                self._lg(f"[Debug] castle SDK download: {e}")
+            except Exception:
+                pass
+        return ""
 
-        Forum-verified API (2026-07):
-          _castle('setAppId', pk)
-          _castle('createRequestToken')  // Promise|string, often IBYIll|...
-        Prefer eval of script text over <script src> IIFE pitfalls; fall back to script tag.
+    def _ensure_castle_sdk(self, pk: str) -> bool:
+        """Load Castle CDN v2 and mint via window._castle (NOT window.Castle).
+
+        Forum (2026-07):
+          _castle('setAppId', pk); _castle('createRequestToken') → IBYIll|…
+        Prefer local data/cf-cache/castle_v2.js then fetch+(0,eval); reject short junk.
         """
         from grok_register_ttk import _get_page
 
@@ -1692,110 +1733,137 @@ return '';
         pk = (pk or "").strip() or "pk_p8GGWvD3TmFJZRsX3BQcqAv9aFVispNz"
         try:
             st = page.run_js(
-                "return {s: window.__hybrid_castle_status||'', l:(window.__hybrid_castle||'').length,"
-                " has: typeof window._castle==='function'};"
+                """
+return {
+  s: window.__hybrid_castle_status||'',
+  l: String(window.__hybrid_castle||'').length,
+  head: String(window.__hybrid_castle||'').slice(0,8),
+  has: typeof window._castle==='function'
+};
+"""
             )
-            if isinstance(st, dict) and (
-                st.get("s") == "done" or int(st.get("l") or 0) >= 200
+            if (
+                isinstance(st, dict)
+                and int(st.get("l") or 0) >= 1000
+                and str(st.get("head") or "").startswith("IBYIll")
             ):
                 return True
         except Exception:
             pass
 
-        # Official Castle browser CDN v2 (matches accounts.x.ai frontend)
+        local_src = self._local_castle_sdk_source()
         cdn = f"https://cdn.castle.io/v2/castle.js?pk={pk}"
         try:
             page.run_js(
-                f"""
+                r"""
+const localSrc = String(arguments[0] || '');
+const pk = String(arguments[1] || '');
+const cdn = String(arguments[2] || '');
 window.__hybrid_castle = window.__hybrid_castle || '';
 window.__hybrid_castles = window.__hybrid_castles || [];
 window.__hybrid_castle_status = 'loading-sdk';
 window.__hybrid_castle_err = '';
-window.__hybrid_castle_methods = [];
-(function(){{
-  var pk = {pk!r};
-  function pushTok(t) {{
-    var s = String(t || '');
-    if (s.length < 40) return false;
-    window.__hybrid_castle = s;
-    window.__hybrid_castles.push(s);
-    window.__hybrid_castle_status = (s.indexOf('IBYIll|') === 0) ? 'done-native' : 'done';
-    return true;
-  }}
-  function mintWithUnderscore() {{
-    try {{
-      if (typeof window._castle !== 'function') {{
-        window.__hybrid_castle_status = 'no-_castle';
-        return false;
-      }}
-      try {{ window._castle('setAppId', pk); }} catch (e0) {{
-        try {{ window._castle('configure', {{pk: pk}}); }} catch (e1) {{}}
-      }}
-      window.__hybrid_castle_status = 'minting';
-      var ret = window._castle('createRequestToken');
-      Promise.resolve(ret).then(function(t){{
-        if (!pushTok(t)) {{
+function pushTok(t) {
+  const s = String(t || '');
+  if (s.indexOf('IBYIll|') !== 0 || s.length < 800) {
+    window.__hybrid_castle_err = 'reject short/non-IBYIll len=' + s.length;
+    window.__hybrid_castle_status = 'reject-short';
+    return false;
+  }
+  window.__hybrid_castle = s;
+  window.__hybrid_castles = window.__hybrid_castles || [];
+  window.__hybrid_castles.push(s);
+  window.__hybrid_castle_status = 'done-native';
+  return true;
+}
+function mintWithUnderscore() {
+  try {
+    if (typeof window._castle !== 'function') {
+      window.__hybrid_castle_status = 'no-_castle';
+      return false;
+    }
+    try { window._castle('setAppId', pk); } catch (e0) {
+      try { window._castle('configure', { pk: pk }); } catch (e1) {}
+    }
+    window.__hybrid_castle_status = 'minting';
+    const ret = window._castle('createRequestToken');
+    Promise.resolve(ret).then(function (t) {
+      if (!pushTok(t)) {
+        if (window.__hybrid_castle_status !== 'reject-short') {
           window.__hybrid_castle_status = 'empty';
           window.__hybrid_castle_err = 'createRequestToken empty';
-        }}
-      }}).catch(function(e){{
-        window.__hybrid_castle_err = String(e);
-        window.__hybrid_castle_status = 'error';
-      }});
-      return true;
-    }} catch (e) {{
+        }
+      }
+    }).catch(function (e) {
       window.__hybrid_castle_err = String(e);
-      window.__hybrid_castle_status = 'exception';
-      return false;
-    }}
-  }}
-  if (typeof window._castle === 'function') {{
+      window.__hybrid_castle_status = 'error';
+    });
+    return true;
+  } catch (e) {
+    window.__hybrid_castle_err = String(e);
+    window.__hybrid_castle_status = 'exception';
+    return false;
+  }
+}
+function evalSrc(src, label) {
+  try {
+    (0, eval)(src);
+    window.__hybrid_castle_load = label;
+  } catch (eEval) {
+    window.__hybrid_castle_err = 'eval:' + label + ':' + String(eEval);
+    return false;
+  }
+  return typeof window._castle === 'function';
+}
+if (typeof window._castle === 'function') {
+  mintWithUnderscore();
+  return true;
+}
+if (localSrc && localSrc.length > 5000) {
+  if (evalSrc(localSrc, 'local-cache')) {
     mintWithUnderscore();
-    return;
-  }}
-  if (window.__hybrid_castle_script) return;
-  window.__hybrid_castle_script = true;
-  // Prefer fetch+eval so IIFE executes in page realm (script.textContent often no-ops)
-  fetch({cdn!r}, {{credentials: 'omit', mode: 'cors', cache: 'force-cache'}})
-    .then(function(r){{ return r.text(); }})
-    .then(function(src){{
-      try {{
-        (0, eval)(src);
-      }} catch (eEval) {{
-        window.__hybrid_castle_err = 'eval:' + String(eEval);
-      }}
-      if (typeof window._castle === 'function') {{
-        mintWithUnderscore();
-        return;
-      }}
-      // fallback: script tag with src
-      var s = document.createElement('script');
-      s.src = {cdn!r};
-      s.async = true;
-      s.onload = function(){{ mintWithUnderscore(); }};
-      s.onerror = function(){{
-        window.__hybrid_castle_err = 'sdk script load failed';
-        window.__hybrid_castle_status = 'sdk-fail';
-      }};
-      document.head.appendChild(s);
-    }})
-    .catch(function(e){{
-      window.__hybrid_castle_err = 'fetch:' + String(e);
-      // last resort script tag
-      var s = document.createElement('script');
-      s.src = {cdn!r};
-      s.async = true;
-      s.onload = function(){{ mintWithUnderscore(); }};
-      s.onerror = function(){{
-        window.__hybrid_castle_status = 'sdk-fail';
-        window.__hybrid_castle_err = 'sdk script load failed';
-      }};
-      document.head.appendChild(s);
-    }});
-}})();
-true;
-"""
+    return true;
+  }
+}
+if (window.__hybrid_castle_script) return true;
+window.__hybrid_castle_script = true;
+fetch(cdn, { credentials: 'omit', mode: 'cors', cache: 'force-cache' })
+  .then(function (r) { return r.text(); })
+  .then(function (src) {
+    if (evalSrc(src, 'cdn-fetch')) {
+      mintWithUnderscore();
+      return;
+    }
+    const s = document.createElement('script');
+    s.src = cdn;
+    s.async = true;
+    s.onload = function () { mintWithUnderscore(); };
+    s.onerror = function () {
+      window.__hybrid_castle_err = 'sdk script load failed';
+      window.__hybrid_castle_status = 'sdk-fail';
+    };
+    document.head.appendChild(s);
+  })
+  .catch(function (e) {
+    window.__hybrid_castle_err = 'fetch:' + String(e);
+    const s = document.createElement('script');
+    s.src = cdn;
+    s.async = true;
+    s.onload = function () { mintWithUnderscore(); };
+    s.onerror = function () {
+      window.__hybrid_castle_status = 'sdk-fail';
+      window.__hybrid_castle_err = 'sdk script load failed';
+    };
+    document.head.appendChild(s);
+  });
+return true;
+""",
+                local_src,
+                pk,
+                cdn,
             )
+            if local_src:
+                self._lg(f"[*] castle SDK local-cache bytes={len(local_src)}")
             return True
         except Exception as e:
             self._lg(f"[Debug] ensure castle sdk: {e}")

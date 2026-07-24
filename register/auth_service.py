@@ -253,8 +253,13 @@ def _via_device_token(
     proxy: str = "",
     log: LogFn | None = None,
     attempts: int = 1,
+    allow_browser_fallback: bool = True,
 ) -> dict[str, Any] | None:
-    """Device Flow mint. attempts>1 retries transient TLS/OPENSSL curl (35)."""
+    """Device Flow mint. attempts>1 retries transient TLS/OPENSSL curl (35).
+
+    协议 Device 失败（invalid_grant / 假批准）后默认回退浏览器 OAuth
+    （对齐 regkit protocol_only=False：机器号/假批准时浏览器更稳）。
+    """
     log = log or _noop
     try:
         from oauth_device_mint import mint_tokens_device_flow
@@ -285,6 +290,56 @@ def _via_device_token(
         log(f"[auth] device mint 失败: {last_err}")
         if ai + 1 < n:
             time.sleep(1.2 * (ai + 1))
+
+    if not allow_browser_fallback:
+        return None
+
+    # 协议 Device 假批准 / invalid_grant → 浏览器点 Allow（accounts.x.ai 前端）
+    el = last_err.lower()
+    if any(
+        x in el
+        for x in (
+            "invalid_grant",
+            "access_denied",
+            "poll timeout",
+            "approve",
+            "denied",
+        )
+    ) or last_err:
+        try:
+            from browser_device_mint import mint_with_sso_browser
+
+            log(
+                "[auth] device protocol failed → browser SSO consent "
+                f"(err={last_err[:80]})"
+            )
+            px = str(proxy or "").strip()
+            if not px:
+                try:
+                    from auth_export_queue import resolve_mint_proxy
+
+                    px = resolve_mint_proxy("")
+                except Exception:
+                    px = ""
+            with _BROWSER_CONSENT_LOCK:
+                br = mint_with_sso_browser(
+                    sso=sso,
+                    proxy=px,
+                    headless=False,
+                    timeout=100.0,
+                    log=log,
+                )
+            if br and br.get("ok") and br.get("access_token"):
+                log("[auth] browser SSO device consent ✔")
+                return {
+                    "access_token": br.get("access_token") or "",
+                    "refresh_token": br.get("refresh_token") or "",
+                    "id_token": br.get("id_token"),
+                    "expires_in": br.get("expires_in"),
+                }
+            log(f"[auth] browser SSO device consent ✘ {br.get('error') if br else 'none'}")
+        except Exception as be:
+            log(f"[auth] browser SSO device fallback err: {be}")
     return None
 
 
