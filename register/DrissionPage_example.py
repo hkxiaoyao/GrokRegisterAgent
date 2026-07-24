@@ -5418,20 +5418,24 @@ def main():
             load_plan_a_enabled_from_config,
             load_plan_b_enabled_from_config,
             load_plan_c_enabled_from_config,
+            load_plan_order_from_config,
         )
 
         plan_a_enabled = load_plan_a_enabled_from_config()
         plan_b_enabled = load_plan_b_enabled_from_config()
         plan_c_enabled = load_plan_c_enabled_from_config()
+        plan_order = load_plan_order_from_config()
     except Exception:
         plan_a_enabled = True
         plan_b_enabled = True
         plan_c_enabled = False
+        plan_order = ["A", "B", "C"]
     # 机器可读 on/off，前端渲染为「本轮启用Plan: A B C」且启绿禁红
     print(
         f"[plan] 本轮启用Plan: A:{'on' if plan_a_enabled else 'off'} "
         f"B:{'on' if plan_b_enabled else 'off'} "
-        f"C:{'on' if plan_c_enabled else 'off'}",
+        f"C:{'on' if plan_c_enabled else 'off'} "
+        f"order={'>'.join(plan_order)}",
         flush=True,
     )
 
@@ -5557,91 +5561,109 @@ def main():
                 )
                 return any(k in s for k in keys)
 
-            # ---------- Plan A ----------
-            if result is None and plan_a_enabled:
-                try:
-                    print("═══ Plan A 注册开始 ═══")
-                    result = run_single_registration(
-                        args.output, extract_numbers=args.extract_numbers, plan="a"
-                    )
-                    used_plan = "a"
-                except KeyboardInterrupt:
-                    print("")
-                    print("[Info] 收到中断信号，停止后续轮次。")
+            # ---------- Plans by register_plan_order (default A→B→C) ----------
+            plan_enabled = {
+                "A": bool(plan_a_enabled),
+                "B": bool(plan_b_enabled),
+                "C": bool(plan_c_enabled),
+            }
+            _abort_rounds = False
+            for plan_key in plan_order:
+                if result is not None or _abort_rounds:
                     break
-                except AccountRetryNeeded as e:
-                    # 含 W3 重复 SSO：不记成功，可换号继续（不占成功配额）
-                    last_err = e
-                    err_parts.append(f"A:retry:{str(e)[:50]}")
-                    print(f"[plan-a] ⟳ 可重试: {e}")
-                except Exception as e:
-                    last_err = e
-                    err_parts.append(f"A:{str(e)[:60]}")
-                    print(f"[plan-a] ✘ 失败: {e}")
+                pk = str(plan_key or "").strip().upper()
+                if pk not in plan_enabled or not plan_enabled[pk]:
+                    continue
 
-            # ---------- Plan B ----------
-            # 硬代理失败跳过 B：换代理已在 open_signup 内做，拟人无法打通 can't be reached
-            skip_b_hard = result is None and plan_b_enabled and _is_hard_proxy_fail(last_err)
-            if skip_b_hard:
-                print(
-                    "[plan-b] 跳过：Plan A 为代理/网络硬失败（chrome-error），"
-                    "拟人兜底无效；已/将降级代理后进入下一方案或下一轮",
-                    flush=True,
-                )
-                err_parts.append("B:skipped_hard_proxy")
-
-            if result is None and plan_b_enabled and not skip_b_hard:
-                try:
-                    print("═══ Plan B 注册开始 ═══")
+                if pk == "A":
                     try:
-                        stop_browser()
-                    except Exception:
-                        pass
-                    time.sleep(0.5 + secrets.randbelow(40) / 100.0)
-                    start_browser()
-                    log_runtime_fingerprint(page, force=False)
-                    result = run_single_registration(
-                        args.output,
-                        extract_numbers=args.extract_numbers,
-                        plan="b",
-                    )
-                    used_plan = "b"
-                except KeyboardInterrupt:
-                    print("")
-                    print("[Info] 收到中断信号，停止后续轮次。")
-                    break
-                except Exception as e:
-                    last_err = e
-                    err_parts.append(f"B:{str(e)[:60]}")
-                    print(f"[plan-b] ✘ 失败: {e}")
+                        print("═══ Plan A 注册开始 ═══")
+                        result = run_single_registration(
+                            args.output, extract_numbers=args.extract_numbers, plan="a"
+                        )
+                        used_plan = "a"
+                    except KeyboardInterrupt:
+                        print("")
+                        print("[Info] 收到中断信号，停止后续轮次。")
+                        _abort_rounds = True
+                        break
+                    except AccountRetryNeeded as e:
+                        last_err = e
+                        err_parts.append(f"A:retry:{str(e)[:50]}")
+                        print(f"[plan-a] ⟳ 可重试: {e}")
+                    except Exception as e:
+                        last_err = e
+                        err_parts.append(f"A:{str(e)[:60]}")
+                        print(f"[plan-a] ✘ 失败: {e}")
+                    continue
 
-            # ---------- Plan C (hybrid) ----------
-            if result is None and plan_c_enabled:
-                try:
-                    from hybrid_register import run_hybrid_registration
+                if pk == "B":
+                    # 硬代理失败跳过 B：拟人无法打通 can't be reached
+                    if _is_hard_proxy_fail(last_err):
+                        print(
+                            "[plan-b] 跳过：上一方案为代理/网络硬失败（chrome-error），"
+                            "拟人兜底无效；已/将降级代理后进入下一方案或下一轮",
+                            flush=True,
+                        )
+                        err_parts.append("B:skipped_hard_proxy")
+                        continue
+                    try:
+                        print("═══ Plan B 注册开始 ═══")
+                        try:
+                            stop_browser()
+                        except Exception:
+                            pass
+                        time.sleep(0.5 + secrets.randbelow(40) / 100.0)
+                        start_browser()
+                        log_runtime_fingerprint(page, force=False)
+                        result = run_single_registration(
+                            args.output,
+                            extract_numbers=args.extract_numbers,
+                            plan="b",
+                        )
+                        used_plan = "b"
+                    except KeyboardInterrupt:
+                        print("")
+                        print("[Info] 收到中断信号，停止后续轮次。")
+                        _abort_rounds = True
+                        break
+                    except Exception as e:
+                        last_err = e
+                        err_parts.append(f"B:{str(e)[:60]}")
+                        print(f"[plan-b] ✘ 失败: {e}")
+                    continue
 
-                    print("═══ Plan C 注册开始 ═══")
-                    hy = run_hybrid_registration(
-                        args.output, extract_numbers=args.extract_numbers
-                    )
-                    if hy and hy.get("sso"):
-                        result = hy
-                        used_plan = "c"
-                    else:
-                        detail = ""
-                        if isinstance(hy, dict):
-                            detail = str(hy.get("error") or "").strip()
-                        msg = detail if detail else "hybrid 未返回 sso"
-                        err_parts.append(f"C:{msg[:80]}")
-                        print(f"[plan-c] ✘ {msg}")
-                except KeyboardInterrupt:
-                    print("")
-                    print("[Info] 收到中断信号，停止后续轮次。")
-                    break
-                except Exception as e:
-                    last_err = e
-                    err_parts.append(f"C:{str(e)[:60]}")
-                    print(f"[plan-c] ✘ 失败: {e}")
+                if pk == "C":
+                    try:
+                        from hybrid_register import run_hybrid_registration
+
+                        print("═══ Plan C 注册开始 ═══")
+                        hy = run_hybrid_registration(
+                            args.output, extract_numbers=args.extract_numbers
+                        )
+                        if hy and hy.get("sso"):
+                            result = hy
+                            used_plan = "c"
+                        else:
+                            detail = ""
+                            if isinstance(hy, dict):
+                                detail = str(hy.get("error") or "").strip()
+                            msg = detail if detail else "hybrid 未返回 sso"
+                            err_parts.append(f"C:{msg[:80]}")
+                            print(f"[plan-c] ✘ {msg}")
+                    except KeyboardInterrupt:
+                        print("")
+                        print("[Info] 收到中断信号，停止后续轮次。")
+                        _abort_rounds = True
+                        break
+                    except Exception as e:
+                        last_err = e
+                        err_parts.append(f"C:{str(e)[:60]}")
+                        print(f"[plan-c] ✘ 失败: {e}")
+                    continue
+
+            if _abort_rounds:
+                break
 
             if result is None:
                 fail_count += 1
