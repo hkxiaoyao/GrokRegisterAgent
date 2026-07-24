@@ -1762,6 +1762,29 @@ return true;
     raise Exception(msg)
 
 
+
+def _pure_browser_mode() -> bool:
+    """True = Plan A/B 禁用协议 CreateEmail/Verify + hybrid 收尾，走纯 UI。
+
+    config: register_pure_browser=true 或 protocol_mail_enabled=false
+    """
+    try:
+        import json as _j
+        conf = _j.loads(
+            open(os.path.join(os.path.dirname(__file__), "config.json"), encoding="utf-8").read()
+        )
+    except Exception:
+        conf = {}
+    if conf.get("register_pure_browser") is True:
+        return True
+    if str(conf.get("register_pure_browser") or "").lower() in ("1", "true", "yes", "on"):
+        return True
+    if conf.get("protocol_mail_enabled") is False:
+        return True
+    if str(conf.get("protocol_mail_enabled") or "").lower() in ("0", "false", "no", "off"):
+        return True
+    return False
+
 def fill_email_and_submit(timeout=15):
     """填邮箱并提交。优先 CDP 真人键入 + 表单内 submit（避免假成功 / Something went wrong）。"""
     _step_pause(250, 800)
@@ -1769,17 +1792,20 @@ def fill_email_and_submit(timeout=15):
     if not email or not dev_token:
         raise Exception("获取邮箱失败")
 
-    # 优先协议发码（UI Sign up 自动化常 Something went wrong / Trace ID:-）
-    try:
-        from protocol_mail import protocol_create_email_code as _pce
+    # 优先协议发码（UI 自动化常 Something went wrong）。pure_browser 强制走 UI 以绑定 React castle。
+    if _pure_browser_mode():
+        print("[*] pure_browser=1 · 跳过协议 CreateEmail，走 UI 发码", flush=True)
+    else:
+        try:
+            from protocol_mail import protocol_create_email_code as _pce
 
-        _pr0 = _pce(email, log=lambda m: print(m, flush=True))
-        if _pr0.get("ok"):
-            print(f"[*] 协议 CreateEmail 优先成功: {email}（跳过 UI 提交发码）", flush=True)
-            # 仍尽量把邮箱填进页面，便于后续 OTP/资料页
-            try:
-                page.run_js(
-                    """
+            _pr0 = _pce(email, log=lambda m: print(m, flush=True))
+            if _pr0.get("ok"):
+                print(f"[*] 协议 CreateEmail 优先成功: {email}（跳过 UI 提交发码）", flush=True)
+                # 仍尽量把邮箱填进页面，便于后续 OTP/资料页
+                try:
+                    page.run_js(
+                        """
 const email = arguments[0];
 const input = document.querySelector(
   'input[data-testid="email"], input[name="email"], input[type="email"], input[autocomplete="email"]'
@@ -1794,15 +1820,15 @@ input.dispatchEvent(new Event('input', { bubbles: true }));
 input.dispatchEvent(new Event('change', { bubbles: true }));
 return true;
 """,
-                    email,
-                )
-            except Exception:
-                pass
-            _step_pause(200, 600)
-            return email, dev_token
-        print(f"[Warn] 协议 CreateEmail 优先失败，回退 UI: {_pr0}", flush=True)
-    except Exception as _pe0:
-        print(f"[Warn] 协议 CreateEmail 不可用，回退 UI: {_pe0}", flush=True)
+                        email,
+                    )
+                except Exception:
+                    pass
+                _step_pause(200, 600)
+                return email, dev_token
+            print(f"[Warn] 协议 CreateEmail 优先失败，回退 UI: {_pr0}", flush=True)
+        except Exception as _pe0:
+            print(f"[Warn] 协议 CreateEmail 不可用，回退 UI: {_pe0}", flush=True)
 
     def _page_error_snapshot():
         try:
@@ -2058,9 +2084,15 @@ return { ok: true, how: 'enter' };
                 f"[Warn] 提交后未出现 OTP 页，改走协议 CreateEmail: {email}",
                 flush=True,
             )
+        if _pure_browser_mode():
+            raise Exception(
+                "pure_browser=1 · UI 未进入 OTP 且禁止协议 CreateEmail 回退"
+            )
         break  # leave UI loop → protocol below
 
     # —— 协议发码（已验证 curl_cffi+proxy 可 grpc-status:0 且入信）——
+    if _pure_browser_mode():
+        raise Exception("pure_browser=1 · 禁止协议 CreateEmail 回退")
     try:
         from protocol_mail import protocol_create_email_code
 
@@ -2105,21 +2137,28 @@ return n > 0;
     except Exception:
         has_otp = False
     if not has_otp:
-        print("[*] 无 OTP 输入框，直接协议 VerifyEmail…", flush=True)
-        try:
-            from protocol_mail import protocol_verify_email_code
-
-            vr = protocol_verify_email_code(
-                email, code, log=lambda m: print(m, flush=True)
+        if _pure_browser_mode():
+            print(
+                "[*] pure_browser=1 · 无 OTP 框，延长 UI 等待（禁止协议 Verify）…",
+                flush=True,
             )
-            if vr.get("ok"):
-                print(
-                    f"[*] 协议 VerifyEmail 成功: {email} code={str(code).replace('-','')}",
-                    flush=True,
+            has_otp = True  # 走下方 UI 填码循环
+        else:
+            print("[*] 无 OTP 输入框，直接协议 VerifyEmail…", flush=True)
+            try:
+                from protocol_mail import protocol_verify_email_code
+
+                vr = protocol_verify_email_code(
+                    email, code, log=lambda m: print(m, flush=True)
                 )
-                return code
-        except Exception as ve:
-            print(f"[Warn] 协议 VerifyEmail: {ve}", flush=True)
+                if vr.get("ok"):
+                    print(
+                        f"[*] 协议 VerifyEmail 成功: {email} code={str(code).replace('-','')}",
+                        flush=True,
+                    )
+                    return code
+            except Exception as ve:
+                print(f"[Warn] 协议 VerifyEmail: {ve}", flush=True)
     deadline = time.time() + (timeout if has_otp else min(8, int(timeout or 60)))
     while time.time() < deadline:
         try:
@@ -4780,12 +4819,28 @@ def run_single_registration(
             email, dev_token = fill_email_and_submit()
             code = fill_code_and_submit(email, dev_token)
             # 协议发码后通常无资料页：A/B 走 hybrid 收尾（Turnstile + Server Action + SSO）
+            # pure_browser：禁止 hybrid 收尾，强制等/填资料表单（全浏览器链路）
             need_hybrid_finish = True
-            try:
-                if has_profile_form():
-                    need_hybrid_finish = False
-            except Exception:
-                need_hybrid_finish = True
+            if _pure_browser_mode():
+                need_hybrid_finish = False
+                print(
+                    f"[plan-{plan_mode}] pure_browser=1 · 禁用 hybrid 收尾，走 UI 资料页",
+                    flush=True,
+                )
+                # 给 SPA 一点时间从 OTP 切到 profile
+                for _wait_i in range(12):
+                    try:
+                        if has_profile_form():
+                            break
+                    except Exception:
+                        pass
+                    time.sleep(0.8)
+            else:
+                try:
+                    if has_profile_form():
+                        need_hybrid_finish = False
+                except Exception:
+                    need_hybrid_finish = True
             if need_hybrid_finish:
                 print(
                     f"[plan-{plan_mode}] 无资料表单（协议发码路径）→ hybrid 收尾…",
