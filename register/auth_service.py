@@ -48,6 +48,106 @@ def _noop(msg: str) -> None:
     return None
 
 
+def probe_sso_oauth_gate(
+    sso: str,
+    *,
+    proxy: str = "",
+    log: LogFn | None = None,
+) -> dict[str, Any]:
+    """Mint 前探测：bot / 高风险账号通常 OAuth 一律 Access denied。
+
+    依据 grok.com/rest/auth/get-user：
+      botFlagSource / riskLevel=USER_RISK_LEVEL_HIGH
+    常见于注册时 castleRequestToken 为空（Plan C 协议 CreateEmail 无 castle）。
+    """
+    log = log or _noop
+    sso = str(sso or "").strip()
+    if not sso:
+        return {"ok": False, "blocked": True, "error": "empty sso"}
+    try:
+        from curl_cffi import requests as cf_requests
+    except ImportError as e:
+        return {"ok": False, "blocked": False, "error": f"curl_cffi required: {e}"}
+
+    sess = cf_requests.Session()
+    if proxy:
+        sess.proxies = {"http": proxy, "https": proxy}
+    for domain in (".grok.com", "grok.com", ".x.ai"):
+        try:
+            sess.cookies.set("sso", sso, domain=domain)
+            sess.cookies.set("sso-rw", sso, domain=domain)
+        except Exception:
+            pass
+    try:
+        r = sess.get(
+            "https://grok.com/rest/auth/get-user",
+            headers={"Origin": "https://grok.com", "Referer": "https://grok.com/"},
+            impersonate="chrome120",
+            timeout=15,
+        )
+    except Exception as e:
+        log(f"[auth] oauth-gate probe network: {e}")
+        return {"ok": False, "blocked": False, "error": f"probe network: {e}"}
+    if int(getattr(r, "status_code", 0) or 0) != 200:
+        log(f"[auth] oauth-gate probe HTTP {r.status_code}: {(r.text or '')[:120]}")
+        return {
+            "ok": False,
+            "blocked": False,
+            "error": f"get-user HTTP {r.status_code}",
+            "status": r.status_code,
+        }
+    try:
+        body = r.json() if r.text else {}
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    risk = str(body.get("riskLevel") or "").strip()
+    bot_src = str(body.get("botFlagSource") or "").strip()
+    bot_details = str(body.get("botFlagDetails") or "").strip()
+    email = str(body.get("email") or "").strip()
+    # BOT_FLAG_SOURCE_* 非空 / 非 UNSPECIFIED → 视为 bot
+    bot_hit = bool(bot_src) and "UNSPECIFIED" not in bot_src.upper() and bot_src.upper() not in (
+        "",
+        "BOT_FLAG_SOURCE_UNSPECIFIED",
+        "0",
+    )
+    high_risk = "HIGH" in risk.upper()
+    blocked = bool(bot_hit or high_risk)
+    if blocked:
+        log(
+            f"[auth] ❌ OAuth 门禁拦截 email={email or '-'} risk={risk or '-'} "
+            f"bot={bot_src or '-'} detail={(bot_details or '')[:120]}"
+        )
+        log(
+            "[auth] 提示：注册期 Castle/风控标签会锁死 OAuth。"
+            " no_token=没带 castle；policy=deny,risk=1.00=已评估仍 deny。"
+            " 建号须用 CDN v2 window._castle('setAppId'+'createRequestToken')，"
+            " 且 CreateEmail field3 / CreateUser 带 conversionId+新鲜 castle；"
+            " 仅补 castle 未必能恢复 OAuth"
+        )
+    else:
+        log(
+            f"[auth] oauth-gate ok email={email or '-'} risk={risk or '-'} "
+            f"bot={bot_src or 'none'}"
+        )
+    return {
+        "ok": not blocked,
+        "blocked": blocked,
+        "riskLevel": risk,
+        "botFlagSource": bot_src,
+        "botFlagDetails": bot_details,
+        "email": email,
+        "userId": str(body.get("userId") or ""),
+        "raw": body,
+        "error": (
+            f"sso bot/high-risk blocked for OAuth (risk={risk or '-'}, bot={bot_src or '-'})"
+            if blocked
+            else ""
+        ),
+    }
+
+
 def _read_cpa_mint_mode() -> str:
     """从环境 / config.json 读 cpa_mint_mode：pkce|device|double。"""
     env = (
@@ -609,6 +709,24 @@ def sso_to_cpa_auth(
             sso = _normalize_sso_token(sso)
     except Exception as e:
         log(f"[auth] materialize 跳过: {e}")
+
+    # Castle bot / 高风险账号：OAuth allow 后仍 invalid_grant，提前失败省时间
+    gate = probe_sso_oauth_gate(sso, proxy=proxy or "", log=log)
+    if gate.get("blocked"):
+        return {
+            "ok": False,
+            "error": gate.get("error") or "sso blocked for OAuth (bot/high-risk)",
+            "email": email or gate.get("email") or "",
+            "mint_mode": (mint_mode or _read_cpa_mint_mode() or "pkce"),
+            "oauth_gate": {
+                "riskLevel": gate.get("riskLevel"),
+                "botFlagSource": gate.get("botFlagSource"),
+                "botFlagDetails": gate.get("botFlagDetails"),
+                "userId": gate.get("userId"),
+            },
+        }
+    if not email and gate.get("email"):
+        email = str(gate.get("email") or "")
 
     resolved_mode = (mint_mode or _read_cpa_mint_mode() or "pkce").strip().lower()
     if resolved_mode in ("a", "auth_code"):
