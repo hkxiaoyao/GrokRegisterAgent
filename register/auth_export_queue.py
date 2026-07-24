@@ -711,8 +711,26 @@ def _run_mint_and_auth_push(
             # _maybe_zdr_after_mint(r, conf=conf, proxy=proxy, log=log, sso=sso, cloudflare_cookies=cloudflare_cookies or "")
             return r
         # 可选：SSO 失败时密码路径 browser Device 兜底（P2）
+        # 禁止：Castle/bot 已 deny 的号（浪费时间；隔离失败时曾污染注册 Chromium）
         err = (r or {}).get("error") or "mint failed"
-        if password and "require_grok_45" not in str(err):
+        err_l = str(err).lower()
+        bot_blocked = any(
+            k in err_l
+            for k in (
+                "bot/high-risk",
+                "bot_flag",
+                "botflagsource",
+                "castle",
+                "policy=deny",
+                "user_risk_level_high",
+            )
+        )
+        if bot_blocked:
+            log(
+                f"[auth-queue] 跳过 browser Device mint（bot/风控已锁死 OAuth）email={email or '-'} "
+                f"err={str(err)[:160]}"
+            )
+        elif password and "require_grok_45" not in str(err):
             try:
                 from browser_device_mint import mint_with_password_browser
 

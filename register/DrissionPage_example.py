@@ -4166,17 +4166,30 @@ def wait_for_grok_com_landing(timeout: int = 90, *, skip_cf_retry: bool = False)
                 print(f"[*] 等待重定向到 grok.com，当前: {current_url}")
                 last_url = current_url
 
-            # mint browser-consent 若误附着注册 Chromium，会把 URL 打到 oauth2/authorize
-            # 此时不要当 CF 卡住去点「完成注册」——只等/报超时，避免二次污染
+            # mint browser 若误附着注册 Chromium，会把 URL 打到 oauth2/device / sign-in?redirect=oauth2
+            # 绝不当 CF 去点「完成注册」；尝试新开 grok.com 标签恢复会话
             try:
                 cu = (current_url or "").lower()
-                if (
+                hijack = (
                     "oauth2/authorize" in cu
                     or "oauth2/consent" in cu
-                    or "/callback" in cu
-                    and "127.0.0.1" in cu
-                ):
-                    time.sleep(1)
+                    or "oauth2/device" in cu
+                    or "redirect=oauth2" in cu
+                    or ("sign-in" in cu and "oauth2" in cu)
+                    or ("/callback" in cu and "127.0.0.1" in cu)
+                )
+                if hijack:
+                    print(
+                        f"[Warn] 检测到 mint/oauth 劫持注册页: {current_url[:120]} · 尝试恢复 grok.com",
+                        flush=True,
+                    )
+                    try:
+                        if browser is not None:
+                            page = browser.new_tab("https://grok.com/")
+                            time.sleep(1.2)
+                    except Exception as re_e:
+                        print(f"[Warn] 恢复 grok.com 标签失败: {re_e}", flush=True)
+                    time.sleep(0.8)
                     continue
             except Exception:
                 pass

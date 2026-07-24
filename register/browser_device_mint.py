@@ -32,6 +32,57 @@ def _noop(_: str) -> None:
     return None
 
 
+def _isolated_chromium_options(*, headless: bool, proxy: str = "", log: LogFn | None = None):
+    """Always auto_port + temp profile so mint never attaches to register Chromium.
+
+    Without auto_port, DrissionPage may reuse an existing debug port and hijack the
+    register tab -> oauth2/device sign-in -> no grok.com sso on that round.
+    """
+    import tempfile
+    from DrissionPage import ChromiumOptions  # type: ignore
+
+    log = log or _noop
+    co = ChromiumOptions()
+    try:
+        co.headless(bool(headless))
+    except Exception:
+        pass
+    for arg in (
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--lang=en-US",
+        "--no-first-run",
+        "--no-default-browser-check",
+    ):
+        try:
+            co.set_argument(arg)
+        except Exception:
+            pass
+    ud = tempfile.mkdtemp(prefix="browser_mint_")
+    try:
+        co.set_user_data_path(ud)
+    except Exception as e:
+        log(f"[browser-mint] set_user_data_path: {e}")
+    # set_user_data_path may clear address — force free local port
+    try:
+        co.auto_port()
+    except Exception:
+        try:
+            co.set_local_port(0)
+        except Exception as e:
+            log(f"[browser-mint] auto_port fail: {e}")
+    proxy_s = str(proxy or "").strip()
+    if proxy_s:
+        try:
+            co.set_proxy(proxy_s)
+        except Exception as e:
+            log(f"[browser-mint] set_proxy failed: {e}")
+    return co, ud
+
+
+
+
 def _request_device_code(proxy: str = "") -> dict[str, Any]:
     try:
         from curl_cffi import requests as cf_requests
@@ -239,24 +290,11 @@ def mint_with_sso_browser(
             "mode": "browser_sso_device",
         }
 
-    co = ChromiumOptions()
-    try:
-        co.headless(bool(headless))
-    except Exception:
-        pass
-    for arg in ("--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu", "--lang=en-US"):
-        try:
-            co.set_argument(arg)
-        except Exception:
-            pass
-    if proxy:
-        try:
-            co.set_proxy(str(proxy).strip())
-        except Exception as e:
-            log(f"[browser-sso-mint] set_proxy: {e}")
-
     browser = None
+    ud_dir = ""
     try:
+        co, ud_dir = _isolated_chromium_options(headless=headless, proxy=proxy, log=log)
+        log(f"[browser-sso-mint] isolated chromium profile={ud_dir}")
         browser = Chromium(co)
         page = browser.latest_tab
         # Seed SSO cookies on accounts.x.ai
@@ -372,6 +410,13 @@ true;
                 browser.quit()
             except Exception:
                 pass
+        if ud_dir:
+            try:
+                import shutil
+
+                shutil.rmtree(ud_dir, ignore_errors=True)
+            except Exception:
+                pass
 
 
 def mint_with_password_browser(
@@ -422,30 +467,11 @@ def mint_with_password_browser(
             "mode": "browser_device",
         }
 
-    co = ChromiumOptions()
-    try:
-        co.headless(bool(headless))
-    except Exception:
-        pass
-    for arg in (
-        "--no-sandbox",
-        "--disable-dev-shm-usage",
-        "--disable-gpu",
-        "--lang=en-US",
-    ):
-        try:
-            co.set_argument(arg)
-        except Exception:
-            pass
-    proxy_s = str(proxy or "").strip()
-    if proxy_s:
-        try:
-            co.set_proxy(proxy_s)
-        except Exception as e:
-            log(f"[browser-mint] set_proxy failed: {e}")
-
     browser = None
+    ud_dir = ""
     try:
+        co, ud_dir = _isolated_chromium_options(headless=headless, proxy=proxy, log=log)
+        log(f"[browser-mint] isolated chromium profile={ud_dir}")
         browser = Chromium(co)
         page = browser.latest_tab
         log(f"[browser-mint] open verify {verify_uri}")
@@ -585,5 +611,12 @@ if (b) b.click();
         if browser is not None:
             try:
                 browser.quit()
+            except Exception:
+                pass
+        if ud_dir:
+            try:
+                import shutil
+
+                shutil.rmtree(ud_dir, ignore_errors=True)
             except Exception:
                 pass
