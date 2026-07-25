@@ -1002,7 +1002,7 @@ export function SettingsForm() {
                 />
                 <ToggleRow
                   label="Auth 转换/重签/测活走代理"
-                  hint="经 sing-box 本地代理"
+                  hint="开=经 sing-box（慢易 CF 524）；关=直连。补签会在代理超时后自动直连回退"
                   checked={draft.cpaAuthUseProxy !== false}
                   onChange={(v) => update('cpaAuthUseProxy', v)}
                 />

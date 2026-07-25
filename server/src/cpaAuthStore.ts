@@ -300,6 +300,8 @@ function runPythonJson(
   opts?: {
     /** 流式 stderr 行（重登进度等）；不阻塞 JSON 解析 */
     onStderrLine?: (line: string) => void;
+    /** 超时毫秒：超时 kill 子进程，避免 CF 524 卡死整请求 */
+    timeoutMs?: number;
   }
 ): Promise<Record<string, unknown>> {
   return new Promise((resolvePromise, reject) => {
@@ -311,6 +313,30 @@ function runPythonJson(
     let stdout = '';
     let stderr = '';
     let stderrBuf = '';
+    let settled = false;
+    const timeoutMs = Math.max(0, Number(opts?.timeoutMs || 0) || 0);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      fn();
+    };
+    if (timeoutMs > 0) {
+      timer = setTimeout(() => {
+        try {
+          child.kill('SIGKILL');
+        } catch {
+          /* ignore */
+        }
+        finish(() =>
+          reject(new Error(`python mint timeout after ${timeoutMs}ms`))
+        );
+      }, timeoutMs);
+    }
     child.stdout?.on('data', (d) => {
       stdout += String(d);
     });
@@ -327,7 +353,7 @@ function runPythonJson(
         }
       }
     });
-    child.on('error', (err) => reject(err));
+    child.on('error', (err) => finish(() => reject(err)));
     child.on('close', (codeExit) => {
       if (opts?.onStderrLine && stderrBuf.trim()) {
         opts.onStderrLine(stderrBuf.trim());
@@ -340,17 +366,22 @@ function runPythonJson(
         .pop();
       if (line) {
         try {
-          resolvePromise(JSON.parse(line) as Record<string, unknown>);
+          const parsed = JSON.parse(line) as Record<string, unknown>;
+          finish(() => resolvePromise(parsed));
           return;
         } catch {
           /* fallthrough */
         }
       }
       if (codeExit !== 0) {
-        reject(new Error(stderr.trim() || `python exit ${codeExit}`));
+        finish(() =>
+          reject(new Error(stderr.trim() || `python exit ${codeExit}`))
+        );
         return;
       }
-      reject(new Error(stderr.trim() || 'python returned no JSON'));
+      finish(() =>
+        reject(new Error(stderr.trim() || 'python returned no JSON'))
+      );
     });
   });
 }
@@ -1801,15 +1832,78 @@ print(json.dumps(r, ensure_ascii=False))
         continue;
       }
       try {
-        const r = await runPythonJson(runtime!.pythonPath, runtime!.registerDir, code, [
-          sso,
-          email,
-          resolveHttpProxy(settings, 'cpaAuth'),
-          dir,
-          doPrecheck ? '1' : '0',
-          deleteOnDead ? '1' : '0',
-          mintMode
-        ]);
+        // 直连可 mint、开 sing-box 却 CF 524：代理 mint 过慢。
+        // 有代理时先限时试代理，失败/超时再直连一次。
+        const proxyPreferred = resolveHttpProxy(settings, 'cpaAuth');
+        // CF/反代约 100s：代理试短窗，失败再直连，总预算 < 90s
+        const proxyTimeoutMs = 32_000;
+        const directTimeoutMs = 55_000;
+        const tryMint = async (proxy: string, timeoutMs: number) =>
+          runPythonJson(
+            runtime!.pythonPath,
+            runtime!.registerDir,
+            code,
+            [
+              sso,
+              email,
+              proxy,
+              dir,
+              doPrecheck ? '1' : '0',
+              deleteOnDead ? '1' : '0',
+              mintMode
+            ],
+            { timeoutMs }
+          );
+
+        let r: Record<string, unknown>;
+        let usedProxy = Boolean(proxyPreferred);
+        try {
+          r = await tryMint(
+            proxyPreferred,
+            proxyPreferred ? proxyTimeoutMs : directTimeoutMs
+          );
+          const skipped0 =
+            Boolean(r.skipped) || String(r.mode || '').startsWith('skipped_');
+          const hardFail =
+            !skipped0 &&
+            (r.ok === false || Boolean(r.error)) &&
+            Boolean(proxyPreferred);
+          if (hardFail) {
+            const err0 = String(r.error || '');
+            // bot/业务拒绝不重试直连
+            if (!/bot|BOT_FLAG|denied|blocked|invalid_grant|skip/i.test(err0)) {
+              try {
+                const r2 = await tryMint('', directTimeoutMs);
+                r = r2;
+                usedProxy = false;
+                r.proxy_fallback = 'direct_after_proxy_fail';
+                r.proxy_used = false;
+              } catch {
+                /* keep proxy result */
+              }
+            }
+          }
+        } catch (e1) {
+          if (proxyPreferred) {
+            try {
+              r = await tryMint('', directTimeoutMs);
+              usedProxy = false;
+              r.proxy_fallback = 'direct_after_proxy_timeout';
+              r.proxy_used = false;
+              r.proxy_error = e1 instanceof Error ? e1.message : String(e1);
+            } catch (e2) {
+              throw new Error(
+                `proxy mint failed (${e1 instanceof Error ? e1.message : String(e1)}); ` +
+                  `direct fallback failed (${e2 instanceof Error ? e2.message : String(e2)})`
+              );
+            }
+          } else {
+            throw e1;
+          }
+        }
+        if (r.proxy_used === undefined) {
+          r.proxy_used = usedProxy;
+        }
         const skipped = Boolean(r.skipped) || String(r.mode || '').startsWith('skipped_');
         if (skipped) {
           results.push({
