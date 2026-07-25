@@ -2370,6 +2370,10 @@ return null;
             self._preflight_turnstile_network()
         inject_failed_hard = False
         last_err_code = ""
+        try:
+            self.last_turnstile_hard_fail = ""
+        except Exception:
+            pass
         # 无论是否 inject：先拟人停顿（贴近手动打开注册页）
         try:
             self._human_idle_before_turnstile()
@@ -2482,6 +2486,10 @@ return frames.some(f=>{
                                 self._lg(
                                     "[!] turnstile CF failure feedback page — fail-fast (no long wait)"
                                 )
+                                try:
+                                    self.last_turnstile_hard_fail = "failure-feedback"
+                                except Exception:
+                                    pass
                                 break
                     except Exception:
                         pass
@@ -2513,6 +2521,10 @@ return frames.some(f=>{
                             "stop re-render/CDP (300010/600010≈bot or challenge fail). "
                             "Need cleaner browser/IP or external solver."
                         )
+                        try:
+                            self.last_turnstile_hard_fail = str(err or last_err_code or "hard-fail")
+                        except Exception:
+                            pass
                         break
                     # Prefer managed auto-pass
                     if status == "rendered" and rendered_at:
@@ -2556,6 +2568,11 @@ return frames.some(f=>{
 
         # inject 已 300010/Verification failed：禁止 getTurnstileToken 的 CDP 连点刷屏
         if inject_failed_hard:
+            try:
+                if not getattr(self, "last_turnstile_hard_fail", ""):
+                    self.last_turnstile_hard_fail = str(last_err_code or "hard-fail")
+            except Exception:
+                pass
             self._lg(
                 f"[*] skip getTurnstileToken CDP path after hard-fail "
                 f"err={last_err_code!r}"

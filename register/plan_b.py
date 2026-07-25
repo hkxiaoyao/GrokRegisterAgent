@@ -163,12 +163,33 @@ return { ok: false, pending: hasWidget, type: hasWidget ? 'pending' : 'absent' }
 """
 
 
-def wait_turnstile_success(page, timeout: float = 120.0, log: LogFn | None = None) -> dict[str, Any]:
-    """等 Turnstile 成功证据（token 或成功文案）。timeout 秒。"""
+def wait_turnstile_success(page, timeout: float = 45.0, log: LogFn | None = None) -> dict[str, Any]:
+    """等 Turnstile 成功证据（token 或成功文案）。timeout 秒。
+
+    默认 45s（原 120s 过长）。若出现 CF failure 反馈页则立即返回，避免空等。
+    """
     log = log or _noop
     deadline = time.time() + max(5.0, float(timeout))
     last: dict[str, Any] = {"ok": False}
     while time.time() < deadline:
+        try:
+            failed = page.run_js(
+                r"""
+const frames = Array.from(document.querySelectorAll('iframe'));
+return frames.some((f) => {
+  try {
+    const s = String(f.src || '');
+    const t = String(f.title || '');
+    return /\/failure/i.test(s) || /feedback report/i.test(t);
+  } catch (e) { return false; }
+});
+"""
+            )
+            if failed:
+                log("[plan-b] Turnstile CF failure 反馈页 — fail-fast")
+                return {"ok": False, "failure": True, "type": "cf-failure-feedback"}
+        except Exception:
+            pass
         try:
             r = page.run_js(_WAIT_TURNSTILE_JS)
             if isinstance(r, dict):

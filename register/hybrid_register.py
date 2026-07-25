@@ -486,32 +486,39 @@ return frames.some((f) => /\/failure/i.test(f.src) || /feedback report/i.test(f.
                     log("[hybrid] turnstile already failure UI — skip long solve (fail-fast)")
                     turnstile = ""
                 else:
-                    turnstile = browser.get_turnstile_token(timeout=28, inject=True, fast=True)
+                    # single short attempt; 600010/empty 后禁止第二轮 inject+CDP 卡死
+                    turnstile = browser.get_turnstile_token(timeout=22, inject=True, fast=True)
             except TypeError:
                 try:
-                    turnstile = browser.get_turnstile_token(timeout=28, inject=True)
+                    turnstile = browser.get_turnstile_token(timeout=22, inject=True)
                 except Exception as te:
                     log(f"[hybrid] turnstile: {te}")
                     turnstile = ""
             except Exception as te:
                 log(f"[hybrid] turnstile: {te}")
                 turnstile = ""
-            if len(str(turnstile or "")) < 80:
-                if _page_turnstile_failed():
-                    log("[hybrid] turnstile failure after first attempt — no second long retry")
-                else:
-                    try:
-                        # short second try only if not hard-failure UI
-                        turnstile = browser.get_turnstile_token(timeout=18, inject=True, fast=True)
-                    except Exception:
-                        pass
             log(f"[hybrid] turnstile_len={len(str(turnstile or ''))}")
-            if len(str(turnstile or "")) < 80 and _page_turnstile_failed():
+            if len(str(turnstile or "")) < 80:
+                hard = ""
+                try:
+                    hard = str(getattr(browser, "last_turnstile_hard_fail", "") or "")
+                except Exception:
+                    hard = ""
+                reason = "turnstile_missing"
+                if _page_turnstile_failed():
+                    reason = "turnstile_failure_feedback_page"
+                elif hard in ("300010", "600010", "failure-feedback"):
+                    reason = f"turnstile_hard_fail:{hard}"
+                log(
+                    f"[hybrid] turnstile fail-fast reason={reason} hard={hard!r} — "
+                    "skip profile/SA (no token = no CreateUser)"
+                )
                 return {
                     "ok": False,
-                    "error": "turnstile_failure_feedback_page",
+                    "error": reason,
                     "mode": "hybrid",
                     "email": email,
+                    "turnstile_hard_fail": hard,
                 }
 
             # Inject token into DOM for React form

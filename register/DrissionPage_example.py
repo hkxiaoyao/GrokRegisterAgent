@@ -3847,9 +3847,14 @@ return value ? 'ready' : 'pending';
             try:
                 from plan_b import wait_turnstile_success, human_pause
 
-                remain = max(30.0, min(120.0, deadline - time.time() - 5))
+                remain = max(20.0, min(45.0, deadline - time.time() - 5))
                 print(f"[plan-b] 等待 Turnstile 成功证据（最长 {int(remain)}s）…")
                 ev = wait_turnstile_success(page, timeout=remain, log=lambda m: print(m))
+                if isinstance(ev, dict) and ev.get("failure"):
+                    raise Exception(
+                        "failed to solve turnstile: Cloudflare 返回 failure 反馈页"
+                        "（多为 IP 信誉/浏览器指纹/架构问题，而非单纯点不中）"
+                    )
                 if not ev.get("ok"):
                     print("[plan-b] 自然成功证据超时，尝试 getTurnstileToken 兜底…")
                 else:
