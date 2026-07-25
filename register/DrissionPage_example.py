@@ -4345,13 +4345,16 @@ def fill_age_gate_and_submit(birth_year: int | None = None, timeout: float = 25)
     """
     填写年龄弹窗中的出生年份并点 Save / Continue / 继续。
     返回 True 表示已提交或弹窗已消失；False 表示未找到/超时。
+
+    2026-07 修复：
+    - React 受控/combobox 用 setNativeValue 常写空 → fill-failed:
+    - 误点 Continue 后弹窗仍在：改 CDP 逐字键入 + 优先 Save
     """
     global page
     year = int(birth_year if birth_year is not None else _random_adult_birth_year())
     year_s = str(year)
     deadline = time.time() + timeout
     print(f"[*] 年龄门：尝试填写出生年 {year_s}")
-    # 节流日志：同类状态最多打 3 次，避免「文案在但未找到年份输入框」刷屏
     _log_counts: dict[str, int] = {}
 
     def _log_throttled(key: str, msg: str, limit: int = 3) -> None:
@@ -4363,274 +4366,353 @@ def fill_age_gate_and_submit(birth_year: int | None = None, timeout: float = 25)
         if n + 1 == limit:
             print(f"[Debug] 年龄门：后续同类日志已省略（{key}）")
 
-    while time.time() < deadline:
+    def _locate_year_box() -> dict | None:
+        """返回可见年份输入的中心坐标与当前值。"""
         try:
             refresh_active_page()
-            result = page.run_js(
+            return page.run_js(
                 r"""
-const year = String(arguments[0] || '').trim();
-
 function isVisible(n) {
-    if (!n) return false;
-    const s = window.getComputedStyle(n);
-    if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') return false;
-    const r = n.getBoundingClientRect();
-    return r.width > 0 && r.height > 0;
+  if (!n) return false;
+  const s = window.getComputedStyle(n);
+  if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return false;
+  const r = n.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
 }
-
-function setNativeValue(input, value) {
-    const isCe = input.isContentEditable || input.getAttribute('contenteditable') === 'true';
-    if (isCe) {
-        input.focus();
-        try {
-            document.execCommand('selectAll', false, null);
-            document.execCommand('insertText', false, value);
-        } catch (e) {
-            input.textContent = value;
-        }
-        input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
-        input.dispatchEvent(new Event('change', { bubbles: true }));
-        return;
-    }
-    const proto = input.tagName === 'TEXTAREA'
-        ? window.HTMLTextAreaElement.prototype
-        : window.HTMLInputElement.prototype;
-    const nativeSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
-    const tracker = input._valueTracker;
-    if (tracker) tracker.setValue('');
-    if (nativeSetter) {
-        nativeSetter.call(input, '');
-        nativeSetter.call(input, value);
-    } else {
-        input.value = '';
-        input.value = value;
-    }
-    input.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
-    input.dispatchEvent(new InputEvent('input', { bubbles: true, cancelable: true, data: value, inputType: 'insertText' }));
-    input.dispatchEvent(new Event('change', { bubbles: true }));
-    input.dispatchEvent(new Event('blur', { bubbles: true }));
-}
-
-// 含 open shadow root 的查询（年龄门常在 portal/shadow 里）
 function deepQueryAll(selector, root) {
-    const out = [];
-    const walk = (node) => {
-        if (!node) return;
-        try {
-            if (node.querySelectorAll) {
-                node.querySelectorAll(selector).forEach((el) => out.push(el));
-            }
-        } catch (e) {}
-        const children = node.children || node.childNodes || [];
-        for (const c of children) {
-            if (c && c.shadowRoot) walk(c.shadowRoot);
-            if (c && c.nodeType === 1) walk(c);
-        }
-    };
-    walk(root || document);
-    return out;
+  const out = [];
+  const walk = (node) => {
+    if (!node) return;
+    try {
+      if (node.querySelectorAll) node.querySelectorAll(selector).forEach((el) => out.push(el));
+    } catch (e) {}
+    const children = node.children || [];
+    for (const c of children) {
+      if (c && c.shadowRoot) walk(c.shadowRoot);
+      if (c && c.nodeType === 1) walk(c);
+    }
+  };
+  walk(root || document);
+  return out;
 }
-
 const body = (document.body && (document.body.innerText || document.body.textContent) || '');
 const ageCtx = /请确认你的年龄|请确认您的年龄|Confirm your age|选择你的出生年份|选择你的出生年|Select your birth year|birth year|年龄/i.test(body);
-
-const allFields = deepQueryAll('input, textarea, [contenteditable="true"], [role="spinbutton"]');
+const allFields = deepQueryAll('input, textarea, [contenteditable="true"], [role="spinbutton"], [role="combobox"]');
 const inputs = allFields.filter((n) => {
-    if (!isVisible(n) || n.disabled || n.readOnly) return false;
-    const meta = [
-        n.placeholder, n.name, n.id, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.type,
-        n.getAttribute('inputmode'), n.getAttribute('autocomplete')
-    ].map((x) => String(x || '')).join(' ');
-    if (/year|birth|年龄|出生|age|bday/i.test(meta)) return true;
-    const t = String(n.type || '').toLowerCase();
-    if ((t === 'number' || t === 'text' || t === 'tel') && Number(n.maxLength || 0) === 4) return true;
-    if (n.getAttribute('inputmode') === 'numeric' && ageCtx) return true;
-    if (ageCtx && (t === 'number' || t === 'text' || t === 'tel' || n.isContentEditable)) {
-        const v = String(n.value || n.textContent || '').trim();
-        if (!v || /^(19|20)\d{0,2}$/.test(v)) return true;
-    }
-    return false;
+  if (!isVisible(n) || n.disabled || n.readOnly) return false;
+  const meta = [
+    n.placeholder, n.name, n.id, n.getAttribute('aria-label'), n.getAttribute('data-testid'), n.type,
+    n.getAttribute('inputmode'), n.getAttribute('autocomplete'), n.getAttribute('role')
+  ].map((x) => String(x || '')).join(' ');
+  if (/year|birth|年龄|出生|age|bday/i.test(meta)) return true;
+  const t = String(n.type || '').toLowerCase();
+  if ((t === 'number' || t === 'text' || t === 'tel') && Number(n.maxLength || 0) === 4) return true;
+  if (n.getAttribute('inputmode') === 'numeric' && ageCtx) return true;
+  if (ageCtx && (t === 'number' || t === 'text' || t === 'tel' || n.isContentEditable || n.getAttribute('role') === 'combobox')) {
+    const v = String(n.value || n.textContent || '').trim();
+    if (!v || /^(19|20)\d{0,2}$/.test(v)) return true;
+  }
+  return false;
 });
-
-// 优先选看起来像年份的 input
 let yearInput = inputs.find((n) => {
-    const meta = [n.placeholder, n.name, n.id, n.getAttribute('aria-label'), n.getAttribute('autocomplete')].join(' ');
-    return /year|birth|出生|年龄|bday/i.test(meta);
+  const meta = [n.placeholder, n.name, n.id, n.getAttribute('aria-label'), n.getAttribute('autocomplete'), n.getAttribute('role')].join(' ');
+  return /year|birth|出生|年龄|bday/i.test(meta);
 }) || inputs.find((n) => Number(n.maxLength || 0) === 4)
   || inputs.find((n) => String(n.type || '').toLowerCase() === 'number')
   || inputs.find((n) => n.getAttribute('inputmode') === 'numeric')
+  || inputs.find((n) => n.getAttribute('role') === 'combobox')
   || inputs[0] || null;
-
-if (!yearInput) {
-    // 下拉/列表式年份（button/listbox）
-    const listOpts = deepQueryAll('[role="option"], [role="listbox"] button, select option').filter(isVisible);
-    const hit = listOpts.find((n) => String(n.innerText || n.textContent || n.value || '').trim() === year);
-    if (hit) {
-        hit.click();
-        const buttons = deepQueryAll('button, [role="button"], a').filter((n) => {
-            return isVisible(n) && !n.disabled && n.getAttribute('aria-disabled') !== 'true';
-        });
-        const cont = buttons.find((n) => {
-            const text = (n.innerText || n.textContent || '').replace(/\s+/g, '');
-            const t = text.toLowerCase();
-            return text.includes('继续') || t.includes('continue') || text.includes('确认') || t.includes('confirm')
-                || text.includes('下一步') || t.includes('next') || t.includes('submit')
-                || t === 'save' || t.includes('save') || text.includes('保存');
-        });
-        if (cont) cont.click();
-        return cont ? 'submitted' : 'filled-no-button';
-    }
-    return ageCtx ? 'no-input' : 'not-present';
-}
-
-yearInput.focus();
-yearInput.click();
-try { yearInput.select(); } catch (e) {}
-setNativeValue(yearInput, year);
-const cur = String(yearInput.value || yearInput.textContent || '').trim();
-if (cur !== year) {
-    setNativeValue(yearInput, '');
-    setNativeValue(yearInput, year);
-}
-const cur2 = String(yearInput.value || yearInput.textContent || '').trim();
-if (cur2 !== year) {
-    return 'fill-failed:' + cur2;
-}
-
-const buttons = deepQueryAll('button, [role="button"], a').filter((n) => {
-    return isVisible(n) && !n.disabled && n.getAttribute('aria-disabled') !== 'true';
-});
-function scoreAgeBtn(n) {
-    const text = (n.innerText || n.textContent || n.getAttribute('aria-label') || n.value || '').replace(/\s+/g, ' ').trim();
-    const t = text.toLowerCase().replace(/\s+/g, '');
-    if (!text || text.length > 32) return -1;
-    if (/google|apple|github|cookie|cancel|关闭|close|reject|skip|稍后|later|notnow/i.test(t)) return -1;
-    let s = 0;
-    if (t === 'save' || text === 'Save' || text === '保存') s += 200;
-    if (t.includes('save') || text.includes('保存')) s += 160;
-    if (t === 'continue' || text === '继续' || text.includes('继续')) s += 140;
-    if (t.includes('continue') || t.includes('confirm') || text.includes('确认')) s += 120;
-    if (t.includes('next') || text.includes('下一步') || t.includes('submit')) s += 80;
-    if (n.type === 'submit') s += 40;
-    try {
-      const r = n.getBoundingClientRect();
-      if (r.width >= 60 && r.width <= 360 && r.height >= 28 && r.height <= 72) s += 20;
-    } catch (e) {}
-    return s;
-}
-const ranked = buttons.map((n) => ({n, s: scoreAgeBtn(n)})).filter((x) => x.s > 0).sort((a,b) => b.s - a.s);
-const cont = ranked.length ? ranked[0].n : null;
-if (!cont) {
-    const labels = buttons.slice(0, 12).map((n) => (n.innerText || n.getAttribute('aria-label') || '').replace(/\s+/g,' ').trim().slice(0,24)).filter(Boolean);
-    return 'filled-no-button:' + labels.join('|');
-}
-try { cont.removeAttribute('disabled'); cont.disabled = false; cont.setAttribute('aria-disabled','false'); } catch (e) {}
-cont.focus();
-try { cont.scrollIntoView({block:'center'}); } catch (e) {}
-cont.click();
-try { cont.dispatchEvent(new MouseEvent('click', {bubbles:true, cancelable:true, view: window})); } catch (e) {}
-return 'submitted:' + ((cont.innerText || cont.getAttribute('aria-label') || '').replace(/\s+/g,' ').trim().slice(0,24));
-
-                """,
-                year_s,
+if (!yearInput) return ageCtx ? { missing: true, ageCtx: true } : null;
+try { yearInput.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+const r = yearInput.getBoundingClientRect();
+return {
+  x: r.x + Math.min(r.width * 0.5, Math.max(12, r.width * 0.4)),
+  y: r.y + r.height * 0.5,
+  w: r.width,
+  h: r.height,
+  val: String(yearInput.value || yearInput.textContent || '').trim(),
+  tag: String(yearInput.tagName || ''),
+  role: String(yearInput.getAttribute('role') || ''),
+  ageCtx: !!ageCtx,
+};
+"""
             )
-        except PageDisconnectedError:
-            refresh_active_page()
-            result = "disconnected"
-        except Exception as e:
-            result = f"error:{e}"
+        except Exception:
+            return None
 
-        if result == "not-present":
-            return False
-        if result == "submitted" or (isinstance(result, str) and str(result).startswith("submitted")):
-            lbl = str(result).split(":", 1)[1] if isinstance(result, str) and ":" in str(result) else ""
-            print(f"[*] 年龄门：已提交出生年 {year_s}" + (f" via={lbl!r}" if lbl else ""))
-            time.sleep(1.2)
-            if not detect_age_gate():
-                print("[*] 年龄门：弹窗已关闭")
-                return True
-            print("[*] 年龄门：已点继续，弹窗可能仍在，继续观察…")
-            time.sleep(1.0)
-            if not detect_age_gate():
-                return True
-            continue
-        if isinstance(result, str) and str(result).startswith("filled-no-button"):
-            detail = str(result).split(":", 1)[1] if ":" in str(result) else ""
-            _log_throttled(
-                "no-btn",
-                f"[Debug] 年龄门：年份已填，未找到继续/Save 按钮 labels={detail[:120]!r}",
-            )
-            # Grok 新 UI 主按钮是 Save（不是 Continue）
-            clicked_lbl = ""
-            for lab in ("Save", "SAVE", "保存", "Continue", "继续", "Confirm", "确认", "Next", "下一步"):
+    def _cdp_type_year(value: str) -> str:
+        """CDP 点击年份框后 Ctrl+A + 逐字 insertText（React 受控更稳）。"""
+        loc = _locate_year_box()
+        if not isinstance(loc, dict):
+            return "no-box"
+        if loc.get("missing"):
+            return "no-input"
+        if "x" not in loc:
+            return "no-input"
+        try:
+            try:
+                _cdp_human_click(float(loc["x"]), float(loc["y"]))
+            except Exception:
+                page.run_cdp(
+                    "Input.dispatchMouseEvent",
+                    type="mousePressed",
+                    x=float(loc["x"]),
+                    y=float(loc["y"]),
+                    button="left",
+                    clickCount=1,
+                )
+                page.run_cdp(
+                    "Input.dispatchMouseEvent",
+                    type="mouseReleased",
+                    x=float(loc["x"]),
+                    y=float(loc["y"]),
+                    button="left",
+                    clickCount=1,
+                )
+            time.sleep(0.08 + secrets.randbelow(8) / 100.0)
+            for kwargs in (
+                dict(type="keyDown", key="a", code="KeyA", modifiers=2, windowsVirtualKeyCode=65),
+                dict(type="keyUp", key="a", code="KeyA", modifiers=2, windowsVirtualKeyCode=65),
+                dict(type="keyDown", key="Backspace", code="Backspace", windowsVirtualKeyCode=8),
+                dict(type="keyUp", key="Backspace", code="Backspace", windowsVirtualKeyCode=8),
+            ):
                 try:
-                    el = page.ele(f"text:{lab}", timeout=0.35) or page.ele(
-                        f"xpath://button[normalize-space(.)='{lab}']", timeout=0.25
-                    )
+                    page.run_cdp("Input.dispatchKeyEvent", **kwargs)
+                except Exception:
+                    pass
+            time.sleep(0.04)
+            for ch in str(value):
+                page.run_cdp("Input.insertText", text=ch)
+                time.sleep(0.04 + secrets.randbelow(50) / 1000.0)
+            time.sleep(0.12)
+            try:
+                page.run_cdp(
+                    "Input.dispatchKeyEvent",
+                    type="keyDown",
+                    key="Tab",
+                    code="Tab",
+                    windowsVirtualKeyCode=9,
+                )
+                page.run_cdp(
+                    "Input.dispatchKeyEvent",
+                    type="keyUp",
+                    key="Tab",
+                    code="Tab",
+                    windowsVirtualKeyCode=9,
+                )
+            except Exception:
+                pass
+            time.sleep(0.1)
+            loc2 = _locate_year_box()
+            cur = ""
+            if isinstance(loc2, dict):
+                cur = str(loc2.get("val") or "").strip()
+            if cur == str(value).strip():
+                return "cdp-ok"
+            fb = page.run_js(
+                r"""
+const year = String(arguments[0] || '');
+function isVisible(n){if(!n)return false;const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden')return false;const r=n.getBoundingClientRect();return r.width>0&&r.height>0;}
+const inputs=[...document.querySelectorAll('input,textarea,[contenteditable="true"],[role="combobox"],[role="spinbutton"]')].filter(n=>isVisible(n)&&!n.disabled);
+let el = inputs.find(n=>{
+  const meta=[n.placeholder,n.name,n.id,n.getAttribute('aria-label'),n.getAttribute('role')].join(' ');
+  return /year|birth|出生|年龄|bday/i.test(meta);
+}) || inputs.find(n=>Number(n.maxLength||0)===4) || inputs[0];
+if(!el) return 'no-el';
+el.focus();
+try{el.click();}catch(e){}
+const setter=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set
+  || Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')?.set;
+const tracker=el._valueTracker; if(tracker) try{tracker.setValue('');}catch(e){}
+if(el.isContentEditable){ el.textContent=year; }
+else if(setter) setter.call(el, year); else el.value=year;
+const rk=Object.keys(el).find(k=>k.startsWith('__reactProps$')||k.startsWith('__reactEventHandlers$'));
+if(rk && el[rk]){
+  const p=el[rk]; const ev={target:el, currentTarget:el, bubbles:true};
+  try{ if(p.onChange) p.onChange({...ev, type:'change'}); }catch(e){}
+  try{ if(p.onInput) p.onInput({...ev, type:'input'}); }catch(e){}
+}
+el.dispatchEvent(new InputEvent('input',{bubbles:true,data:year,inputType:'insertText'}));
+el.dispatchEvent(new Event('change',{bubbles:true}));
+el.dispatchEvent(new Event('blur',{bubbles:true}));
+const cur=String(el.value||el.textContent||'').trim();
+return cur===year ? 'react-ok' : ('mismatch:'+cur);
+""",
+                value,
+            )
+            return str(fb or f"mismatch:{cur}")
+        except Exception as e:
+            return f"cdp-err:{e}"
+
+    def _click_age_submit(prefer_save: bool = True) -> str:
+        """点 Save/Continue；返回按钮文案或空。"""
+        try:
+            info = page.run_js(
+                r"""
+const preferSave = !!arguments[0];
+function isVisible(n){
+  if(!n) return false;
+  const s=getComputedStyle(n);
+  if(s.display==='none'||s.visibility==='hidden'||Number(s.opacity)===0) return false;
+  const r=n.getBoundingClientRect();
+  return r.width>0 && r.height>0;
+}
+function deepQueryAll(sel){
+  const out=[];
+  const walk=(node)=>{
+    if(!node) return;
+    try{ if(node.querySelectorAll) node.querySelectorAll(sel).forEach(el=>out.push(el)); }catch(e){}
+    const ch=node.children||[];
+    for(const c of ch){ if(c&&c.shadowRoot) walk(c.shadowRoot); if(c&&c.nodeType===1) walk(c); }
+  };
+  walk(document);
+  return out;
+}
+function score(n){
+  const text=(n.innerText||n.textContent||n.getAttribute('aria-label')||n.value||'').replace(/\s+/g,' ').trim();
+  const t=text.toLowerCase().replace(/\s+/g,'');
+  if(!text||text.length>36) return -1;
+  if(/google|apple|github|cookie|cancel|关闭|close|reject|skip|稍后|later|notnow|dismiss/i.test(t)) return -1;
+  let s=0;
+  if(t==='save'||text==='Save'||text==='保存') s+=220;
+  if(t.includes('save')||text.includes('保存')) s+=180;
+  if(t==='continue'||text==='继续'||text.includes('继续')) s += preferSave ? 100 : 160;
+  if(t.includes('continue')||t.includes('confirm')||text.includes('确认')) s+=90;
+  if(t.includes('next')||text.includes('下一步')||t.includes('submit')) s+=70;
+  if(n.type==='submit') s+=30;
+  try{
+    const r=n.getBoundingClientRect();
+    if(r.width>=60&&r.width<=420&&r.height>=28&&r.height<=80) s+=20;
+  }catch(e){}
+  return s;
+}
+const buttons=deepQueryAll('button,[role=button],input[type=submit],a').filter(n=>isVisible(n)&&!n.disabled&&n.getAttribute('aria-disabled')!=='true');
+const ranked=buttons.map(n=>({n,s:score(n),t:(n.innerText||n.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim().slice(0,28)})).filter(x=>x.s>0).sort((a,b)=>b.s-a.s);
+if(!ranked.length) return {ok:false, labels: buttons.slice(0,10).map(n=>(n.innerText||n.getAttribute('aria-label')||'').replace(/\s+/g,' ').trim().slice(0,20)).filter(Boolean)};
+const best=ranked[0];
+try{ best.n.removeAttribute('disabled'); best.n.disabled=false; best.n.setAttribute('aria-disabled','false'); }catch(e){}
+try{ best.n.scrollIntoView({block:'center'}); }catch(e){}
+const r=best.n.getBoundingClientRect();
+return {ok:true, text:best.t, x:r.x+r.width/2, y:r.y+r.height/2, score:best.s};
+""",
+                prefer_save,
+            )
+        except Exception as e:
+            return f"err:{e}"
+        if not isinstance(info, dict) or not info.get("ok"):
+            for lab in ("Save", "保存", "Continue", "继续", "Confirm", "确认"):
+                try:
+                    el = page.ele(f"text:{lab}", timeout=0.3)
                     if not el:
                         continue
                     try:
-                        try:
-                            box = el.rect
-                            mid_x = float(getattr(box, "mid_x", 0) or 0)
-                            mid_y = float(getattr(box, "mid_y", 0) or 0)
-                            if mid_x > 0 and mid_y > 0:
-                                _cdp_human_click(mid_x, mid_y)
-                                clicked_lbl = lab
-                                break
-                        except Exception:
-                            pass
-                        try:
-                            el.click(by_js=False)
-                        except Exception:
-                            el.click()
-                        clicked_lbl = lab
-                        break
+                        box = el.rect
+                        mx = float(getattr(box, "mid_x", 0) or 0)
+                        my = float(getattr(box, "mid_y", 0) or 0)
+                        if mx > 0 and my > 0:
+                            _cdp_human_click(mx, my)
+                            return lab
                     except Exception:
-                        continue
+                        pass
+                    try:
+                        el.click(by_js=False)
+                    except Exception:
+                        el.click()
+                    return lab
                 except Exception:
                     continue
-            if not clicked_lbl:
-                try:
-                    clicked_lbl = page.run_js(
-                        r"""
-function vis(n){if(!n)return false;const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden')return false;const r=n.getBoundingClientRect();return r.width>0&&r.height>0;}
-const btns=[...document.querySelectorAll('button,[role=button],input[type=submit]')].filter(vis);
-const b=btns.find(n=>{
-  const t=((n.innerText||'')+(n.getAttribute('aria-label')||'')+(n.value||'')).toLowerCase().replace(/\s+/g,'');
-  return t==='save'||t.includes('save')||t.includes('保存')||t.includes('continue')||t.includes('继续');
-});
-if(!b) return '';
-try{b.removeAttribute('disabled');b.disabled=false;}catch(e){}
-b.click();
-return (b.innerText||b.getAttribute('aria-label')||'ok').slice(0,24);
-"""
-                    ) or ""
-                except Exception:
-                    clicked_lbl = ""
-            if clicked_lbl:
-                print(f"[*] 年龄门：补点提交按钮 {clicked_lbl!r}")
-                time.sleep(1.2)
-                if not detect_age_gate():
-                    print("[*] 年龄门：弹窗已关闭")
-                    return True
-                print("[*] 年龄门：已点 Save/Continue，弹窗可能仍在，继续观察…")
-                time.sleep(0.8)
-                if not detect_age_gate():
-                    return True
-                continue
-        elif result == "no-input":
-            _log_throttled("no-input", "[Debug] 年龄门：文案在但未找到年份输入框")
-        elif isinstance(result, str) and result.startswith("fill-failed"):
-            _log_throttled("fill-failed", f"[Debug] 年龄门：年份写入失败 {result}")
-        elif result == "disconnected":
+            return ""
+        try:
+            _cdp_human_click(float(info["x"]), float(info["y"]))
+        except Exception:
+            try:
+                page.run_js(
+                    "const x=arguments[0],y=arguments[1]; const el=document.elementFromPoint(x,y); if(el){ el.click(); return true;} return false;",
+                    float(info["x"]),
+                    float(info["y"]),
+                )
+            except Exception:
+                pass
+        return str(info.get("text") or "ok")
+
+    def _year_value() -> str:
+        loc = _locate_year_box()
+        if isinstance(loc, dict):
+            return str(loc.get("val") or "").strip()
+        return ""
+
+    def _pick_list_year() -> bool:
+        try:
+            ok = page.run_js(
+                r"""
+const year = String(arguments[0]||'');
+function isVisible(n){if(!n)return false;const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden')return false;const r=n.getBoundingClientRect();return r.width>0&&r.height>0;}
+const opts=[...document.querySelectorAll('[role="option"], [role="listbox"] button, select option, li')].filter(isVisible);
+const hit=opts.find(n=>String(n.innerText||n.textContent||n.value||'').trim()===year);
+if(!hit) return false;
+hit.click();
+return true;
+""",
+                year_s,
+            )
+            return bool(ok)
+        except Exception:
+            return False
+
+    while time.time() < deadline:
+        try:
+            refresh_active_page()
+        except Exception:
             pass
-        else:
-            _log_throttled(f"st:{result}", f"[Debug] 年龄门：状态 {result}")
+        if not detect_age_gate():
+            if _log_counts.get("submitted"):
+                print("[*] 年龄门：弹窗已关闭")
+                return True
+            return False
 
-        time.sleep(0.6)
+        typed = _cdp_type_year(year_s)
+        if typed in ("no-input", "no-box"):
+            if _pick_list_year():
+                typed = "list-ok"
+            else:
+                _log_throttled("no-input", f"[Debug] 年龄门：未找到年份输入 typed={typed}")
+                time.sleep(0.5)
+                continue
+        cur = _year_value()
+        if cur != year_s and "ok" not in typed and typed != "list-ok":
+            _log_throttled("fill-failed", f"[Debug] 年龄门：年份写入失败 {typed} cur={cur!r}")
+            _pick_list_year()
+            typed2 = _cdp_type_year(year_s)
+            cur = _year_value()
+            if cur != year_s and "ok" not in str(typed2):
+                time.sleep(0.45)
+                continue
 
-    # 超时前再确认弹窗是否已消失（可能已提交成功但写年校验失败）
+        time.sleep(0.15 + secrets.randbelow(12) / 100.0)
+        lbl = _click_age_submit(prefer_save=True)
+        if not lbl:
+            _log_throttled("no-btn", "[Debug] 年龄门：年份已填，未找到 Save/Continue")
+            time.sleep(0.5)
+            continue
+        _log_counts["submitted"] = _log_counts.get("submitted", 0) + 1
+        print(f"[*] 年龄门：已提交出生年 {year_s} via={lbl!r} fill={typed}")
+        time.sleep(1.15)
+        if not detect_age_gate():
+            print("[*] 年龄门：弹窗已关闭")
+            return True
+        print("[*] 年龄门：已点提交，弹窗可能仍在，再填一次并优先 Save…")
+        if _year_value() != year_s:
+            _cdp_type_year(year_s)
+        time.sleep(0.2)
+        lbl2 = _click_age_submit(prefer_save=True)
+        if lbl2:
+            print(f"[*] 年龄门：二次提交 via={lbl2!r}")
+        time.sleep(1.0)
+        if not detect_age_gate():
+            print("[*] 年龄门：弹窗已关闭")
+            return True
+        time.sleep(0.55)
+
     try:
         if not detect_age_gate():
             print(f"[*] 年龄门：超时复查弹窗已消失，视为成功（年 {year_s}）")
@@ -4639,6 +4721,7 @@ return (b.innerText||b.getAttribute('aria-label')||'ok').slice(0,24);
         pass
     print(f"[Warn] 年龄门：处理超时（目标年 {year_s}）")
     return False
+
 
 
 # 年龄门触发用的随机英文短句（避免固定「你好」）
