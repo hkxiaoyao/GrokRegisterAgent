@@ -755,6 +755,126 @@ def _ensure_payload_sso(payload: dict[str, Any], sso: str) -> dict[str, Any]:
     return payload
 
 
+
+def _find_existing_refresh_for_sso(
+    sso: str,
+    email: str = "",
+    auth_dir: str | Path | None = None,
+) -> tuple[str, str, Path | None]:
+    """从本地 xai-*.json 找可用 refresh（email 优先，其次 sso 匹配）。
+
+    返回 (refresh_token, email, path)。抄 main：有 refresh 先 refresh 再 SSO mint。
+    """
+    sso_n = _normalize_sso_token(sso or "")
+    email_n = str(email or "").strip().lower()
+    try:
+        out_dir = Path(auth_dir) if auth_dir else default_auth_dir()
+    except Exception:
+        return "", email_n, None
+    if not out_dir.is_dir():
+        return "", email_n, None
+
+    try:
+        files = sorted(out_dir.glob("xai-*.json"), key=lambda x: x.stat().st_mtime, reverse=True)
+    except Exception:
+        return "", email_n, None
+
+    # 1) email 字段精确匹配（不依赖文件名大小写）
+    # 2) sso 字段匹配
+    # 3) 文件名包含 email
+    ranked: list[tuple[int, Path, dict]] = []
+    for fp in files:
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        refresh = str(data.get("refresh_token") or "").strip()
+        if not refresh:
+            continue
+        file_email = str(data.get("email") or "").strip().lower()
+        file_sso = _normalize_sso_token(str(data.get("sso") or ""))
+        score = 0
+        if email_n and file_email == email_n:
+            score = 3
+        elif sso_n and file_sso and file_sso == sso_n:
+            score = 2
+        elif email_n and email_n in fp.name.lower():
+            score = 1
+        if score > 0:
+            ranked.append((score, fp, data))
+    if not ranked:
+        return "", email_n, None
+    ranked.sort(key=lambda x: (x[0],), reverse=True)
+    _score, fp, data = ranked[0]
+    refresh = str(data.get("refresh_token") or "").strip()
+    em = str(data.get("email") or email_n or "").strip()
+    return refresh, em, fp
+
+
+def _try_refresh_first_for_mint(
+    *,
+    sso: str,
+    email: str,
+    proxy: str,
+    out_dir: Path,
+    delete_on_dead: bool,
+    skip_remote: bool,
+    require_grok_45: bool,
+    log: LogFn,
+) -> dict[str, Any] | None:
+    """有 refresh 则 refresh 写 auth；成功返回结果 dict，失败返回 None 以走 SSO mint。"""
+    refresh, em, src = _find_existing_refresh_for_sso(sso, email, out_dir)
+    if not refresh:
+        return None
+    log(
+        f"[auth] refresh-first: found refresh"
+        f"{(' from ' + src.name) if src else ''}"
+        f" email={em or email or '-'}"
+    )
+    token = refresh_access_token(refresh, proxy=proxy or "")
+    if not token or not token.get("access_token"):
+        log(f"[auth] refresh-first failed → SSO mint: {token}")
+        return None
+    new_refresh = str(token.get("refresh_token") or refresh)
+    sso_keep = _normalize_sso_token(sso or "")
+    try:
+        one = _write_and_probe_one(
+            token={
+                "access_token": token.get("access_token"),
+                "refresh_token": new_refresh,
+                "id_token": token.get("id_token"),
+                "expires_in": token.get("expires_in"),
+            },
+            sso=sso_keep,
+            email=em or email or "",
+            out_dir=out_dir,
+            channel="",  # 单通道不写 -refresh 后缀，覆盖/更新主 xai-<email>.json
+            proxy=proxy or "",
+            random_fingerprint=True,
+            skip_remote=skip_remote,
+            remote_url="",
+            management_key="",
+            delete_on_dead=delete_on_dead,
+            log=log,
+            require_grok_45=require_grok_45,
+        )
+    except Exception as e:
+        log(f"[auth] refresh-first write err: {e}")
+        return None
+    if not isinstance(one, dict):
+        return None
+    if one.get("ok"):
+        one["mode"] = "sso_mint_refresh"
+        one["mint_mode"] = "refresh"
+        one["refresh_first"] = True
+        log("[auth] refresh-first ✔ skip full SSO OAuth mint")
+        return one
+    log(f"[auth] refresh-first write not ok → SSO mint: {one.get('error')}")
+    return None
+
+
 def sso_to_cpa_auth(
     *,
     sso: str,
@@ -836,6 +956,28 @@ def sso_to_cpa_auth(
         resolved_mode = "device"
     if resolved_mode in ("c", "auto", "merged", "both", "pkce_then_device"):
         resolved_mode = "double"
+
+    # ---------- refresh-first（抄 main）：本地已有 refresh 则跳过 SSO OAuth ----------
+    # 补签/重 mint 常见场景：auth 已存在，只需续票，避免 device/PKCE 慢与 524
+    prefer_refresh = str(
+        os.environ.get("CPA_MINT_REFRESH_FIRST")
+        or os.environ.get("cpa_mint_refresh_first")
+        or "1"
+    ).strip().lower() not in ("0", "false", "no", "off")
+    if prefer_refresh and resolved_mode != "double":
+        # double 仍要两通道 OAuth；单通道可 refresh-first
+        rf = _try_refresh_first_for_mint(
+            sso=sso,
+            email=email or "",
+            proxy=proxy or "",
+            out_dir=out_dir,
+            delete_on_dead=delete_on_dead,
+            skip_remote=skip_remote,
+            require_grok_45=require_grok_45,
+            log=log,
+        )
+        if rf is not None:
+            return rf
 
     # ---------- double：两通道各 mint → 各写 auth → 各 probe ----------
     if resolved_mode == "double":

@@ -8,6 +8,8 @@ Device Flow mint（mode=B）：SSO cookie → access/refresh。
 """
 from __future__ import annotations
 
+import os
+import threading
 import time
 from typing import Any, Callable, Optional
 
@@ -45,6 +47,51 @@ SCOPE = (
 GROK_REFERRER = "grok-build"
 
 LogFn = Callable[[str], None]
+
+# ---- 全局 device-flow 节流（抄 grok-register-fast）----
+# 多 worker 同时 device/code+verify 易 429 slow_down
+
+_DEVICE_FLOW_LOCK = threading.RLock()
+_DEVICE_FLOW_LAST_TS = 0.0
+
+
+def _device_flow_gap_sec() -> float:
+    try:
+        return max(0.0, float(os.getenv("GROK2API_SSO_DEVICE_GAP_SEC", "1.2") or 1.2))
+    except (TypeError, ValueError):
+        return 1.2
+
+
+def _wait_device_flow_slot(log: Optional[LogFn] = None) -> None:
+    """跨线程 device flow 启动最小间隔。"""
+    global _DEVICE_FLOW_LAST_TS
+    gap = _device_flow_gap_sec()
+    with _DEVICE_FLOW_LOCK:
+        now = time.time()
+        wait = (_DEVICE_FLOW_LAST_TS + gap) - now
+        if wait > 0:
+            if log:
+                try:
+                    log(f"[mint-B] device gap wait {wait:.2f}s")
+                except Exception:
+                    pass
+            time.sleep(wait)
+        _DEVICE_FLOW_LAST_TS = time.time()
+
+
+def _poll_interval_sec(raw: Any = None) -> float:
+    """approve 后 poll 间隔：可立即/更短（默认 cap 1.5s）。"""
+    env = (os.getenv("GROK2API_SSO_POLL_INTERVAL") or "").strip()
+    if env:
+        try:
+            return max(0.2, min(10.0, float(env)))
+        except ValueError:
+            pass
+    try:
+        hinted = float(raw if raw is not None else 1)
+    except (TypeError, ValueError):
+        hinted = 1.0
+    return max(0.4, min(hinted, 1.5))
 
 
 def _noop(_: str) -> None:
@@ -88,6 +135,7 @@ def mint_tokens_device_flow(
     except Exception as e:
         return {"ok": False, "error": f"sso probe: {e}", "mode": "device"}
 
+    _wait_device_flow_slot(lg)
     lg("[mint-B] device code…")
     try:
         r = s.post(
@@ -267,9 +315,15 @@ def mint_tokens_device_flow(
     except Exception as e:
         return {"ok": False, "error": f"verify/approve: {e}", "mode": "device"}
 
-    lg("[mint-B] poll token…")
+    # approve 已完成：立即 poll，间隔缩短（抄 fast immediate + short interval）
+    poll_iv = _poll_interval_sec(interval)
+    lg(f"[mint-B] poll token… (interval={poll_iv:.2f}s, immediate)")
     deadline = time.time() + min(float(poll_timeout), float(expires_in), 180.0)
+    first = True
     while time.time() < deadline:
+        if not first:
+            time.sleep(poll_iv)
+        first = False
         try:
             tr = s.post(
                 TOKEN_URL,
@@ -287,7 +341,10 @@ def mint_tokens_device_flow(
             )
             tb = tr.json() if tr.text else {}
         except Exception as e:
-            return {"ok": False, "error": f"poll: {e}", "mode": "device"}
+            # 瞬态网络：短睡后继续，不立刻判死（已 approve）
+            lg(f"[mint-B] poll net err: {e}")
+            time.sleep(max(1.0, poll_iv))
+            continue
         if tr.status_code == 200 and isinstance(tb, dict) and tb.get("access_token"):
             lg("[mint-B] token ok")
             return {
@@ -301,9 +358,11 @@ def mint_tokens_device_flow(
             }
         err = str((tb or {}).get("error") or "") if isinstance(tb, dict) else ""
         if err in ("authorization_pending", "slow_down"):
-            time.sleep(interval + (2 if err == "slow_down" else 0))
+            if err == "slow_down":
+                poll_iv = min(5.0, poll_iv + 1.0)
+                lg(f"[mint-B] slow_down → interval={poll_iv:.2f}s")
             continue
         if err:
             return {"ok": False, "error": f"poll: {err}", "mode": "device"}
-        time.sleep(interval)
+        # 无 error 也无 token：继续
     return {"ok": False, "error": "poll timeout", "mode": "device"}
