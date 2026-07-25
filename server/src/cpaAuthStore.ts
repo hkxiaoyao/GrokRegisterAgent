@@ -1692,7 +1692,7 @@ export async function mintCpaAuthFromSso(input: {
 }> {
   const items = Array.isArray(input.items) ? input.items : [];
   if (items.length === 0) throw new Error('缺少 SSO 列表');
-  if (items.length > 50) throw new Error('单次 mint 最多 50 个');
+  if (items.length > 8) throw new Error('单次 mint 最多 8 个（反代超时；前端请分块）');
   const doPrecheck = input.precheck !== false;
   const skipBotFlag1 = input.skipBotFlag1 !== false;
 
@@ -1764,7 +1764,8 @@ if isinstance(r, dict):
 print(json.dumps(r, ensure_ascii=False))
 `.trim();
 
-  const concurrency = Math.min(3, Math.max(1, Number(input.concurrency) || 2));
+  // CF/反代 524：默认串行；调用方也可传 concurrency 但封顶 2
+  const concurrency = Math.min(2, Math.max(1, Number(input.concurrency) || 1));
   const results: CpaAuthBatchResultItem[] = [];
   let idx = 0;
 
@@ -1806,7 +1807,8 @@ print(json.dumps(r, ensure_ascii=False))
           resolveHttpProxy(settings, 'cpaAuth'),
           dir,
           doPrecheck ? '1' : '0',
-          deleteOnDead ? '1' : '0'
+          deleteOnDead ? '1' : '0',
+          mintMode
         ]);
         const skipped = Boolean(r.skipped) || String(r.mode || '').startsWith('skipped_');
         if (skipped) {

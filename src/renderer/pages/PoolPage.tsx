@@ -49,7 +49,8 @@ const AUTH_FILTER_KEY = 'gra-pool-auth-filter';
 const ALIVE_FILTER_KEY = 'gra-pool-alive-filter';
 const SSO_FILTER_KEY = 'gra-pool-sso-filter';
 const G2A_FILTER_KEY = 'gra-pool-g2a-filter';
-const MINT_CHUNK = 5;
+/** 经 CF 反代时单次 HTTP 需 <~100s；device mint 单号即可接近超时，故每块 1 个 */
+const MINT_CHUNK = 1;
 
 /** Auth 转换筛选 */
 type AuthFilter = 'all' | 'unconverted' | 'converted';
@@ -768,7 +769,8 @@ export function PoolPage() {
         );
         const r = await window.api.mintCpaAuthFromSso({
           items: chunk.map((a) => ({ sso: a.sso, email: a.email })),
-          concurrency: Math.min(3, chunk.length),
+          // 反代 524：禁止块内并行，单号串行 mint
+          concurrency: 1,
           skipBotFlag1
         });
         allResults.push(...(r.results || []));

@@ -35,9 +35,12 @@ async function http<T>(method: string, path: string, body?: unknown): Promise<T>
     }
     // Cloudflare 524 等会返回整页 HTML，避免把巨型 body 塞进 Error
     if (res.status === 524) {
-      throw new Error(
-        `${method} ${path} → HTTP 524 源站超时（测活块过大或过慢；已请用分块测活）`
-      );
+      const mintHint = /cpa-auth\/mint/i.test(path)
+        ? '补签 Auth 单号过慢或块过大（请减小并发/分块；device mint 更易超时）'
+        : /probe|proxy-pool|check/i.test(path)
+          ? '测活块过大或过慢（请用更小分块）'
+          : '源站处理超时（块过大/单任务过慢）';
+      throw new Error(`${method} ${path} → HTTP 524 源站超时（${mintHint}）`);
     }
     if (detail.length > 240 || /<!DOCTYPE html/i.test(detail)) {
       detail = detail.replace(/\s+/g, ' ').slice(0, 180) + '…';
