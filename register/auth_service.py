@@ -220,10 +220,16 @@ def _via_pkce_token(
     *,
     proxy: str = "",
     log: LogFn | None = None,
-    allow_device_fallback: bool = True,
+    allow_device_fallback: bool | None = None,
     cloudflare_cookies: str = "",
 ) -> dict[str, Any] | None:
     """PKCE main path; optionally device then short browser Allow.
+
+    Order (srcback-aligned):
+      1) CreateCookieSetterLink PKCE (cpa_pkce_mint, chrome131)
+      2) legacy sso_to_token PKCE
+      3) device fallback (config cpa_allow_device_flow_fallback, default off)
+      4) browser consent Allow
 
     allow_device_fallback=False for double-mode *pkce channel* so a device grant
     is never written as xai-*-pkce.json (Auth B / *-device.json would be missing
@@ -232,15 +238,85 @@ def _via_pkce_token(
     log = log or _noop
     log("[auth] mint channel=pkce (Auth Code+PKCE)…")
     tokens: dict[str, Any] | None = None
+
+    # Resolve device fallback: explicit arg wins; else config (default False)
+    if allow_device_fallback is None:
+        try:
+            from cpa_pkce_mint import allow_device_flow_fallback as _adf
+
+            allow_device_fallback = bool(_adf())
+        except Exception:
+            allow_device_fallback = False
+
+    # 0) CreateCookieSetterLink PKCE（srcback 主路径）
+    try:
+        from cpa_pkce_mint import (
+            PKCEMintError,
+            mint_with_sso_pkce,
+            prefer_cookie_setter_pkce,
+            load_mint_impersonate,
+        )
+
+        if prefer_cookie_setter_pkce():
+            imp = load_mint_impersonate()
+            log(f"[auth] mint try cookie-setter PKCE impersonate={imp}…")
+            # 网络瞬断轻量重试（对齐 cpa_pkce_network_retries 默认 1）
+            last_cs_err = ""
+            for attempt in range(1, 3):
+                try:
+                    tokens = mint_with_sso_pkce(
+                        sso_cookie=sso,
+                        proxy=proxy or None,
+                        log=log,
+                        impersonate=imp,
+                    )
+                    if tokens and tokens.get("access_token"):
+                        log("[auth] cookie-setter PKCE SUCCESS")
+                        return tokens
+                    break
+                except PKCEMintError as e:
+                    last_cs_err = str(e)
+                    err_l = last_cs_err.lower()
+                    transient = any(
+                        k in err_l
+                        for k in (
+                            "timeout",
+                            "timed out",
+                            "connect",
+                            "curl",
+                            "tls",
+                            "reset",
+                            "refused",
+                        )
+                    )
+                    if attempt < 2 and transient:
+                        log(
+                            f"[auth] cookie-setter PKCE network: {e}; retry {attempt}/1"
+                        )
+                        time.sleep(1.5)
+                        continue
+                    log(f"[auth] cookie-setter PKCE failed: {e}")
+                    break
+                except Exception as e:
+                    last_cs_err = str(e)
+                    log(f"[auth] cookie-setter PKCE exception: {e}")
+                    break
+            tokens = None
+    except ImportError as ie:
+        log(f"[auth] cpa_pkce_mint 不可用，回落 legacy PKCE: {ie}")
+    except Exception as ce:
+        log(f"[auth] cookie-setter PKCE setup err: {ce}")
+
+    # 1) legacy form-consent PKCE
     try:
         tokens = sso_to_token(sso, proxy=proxy or "", log=log)
     except Exception as pe:
-        log(f"[auth] PKCE exception: {pe}")
+        log(f"[auth] legacy PKCE exception: {pe}")
         tokens = None
     if tokens and tokens.get("access_token"):
         return tokens
 
-    # 1) device: only when this is a single-channel mint (mode A), not double's pkce slot
+    # 2) device: only when enabled (default off; double-mode pkce slot always off)
     if allow_device_fallback:
         log("[auth] PKCE failed → device flow fallback…")
         try:
@@ -250,9 +326,12 @@ def _via_pkce_token(
         except Exception as de:
             log(f"[auth] device fallback err: {de}")
     else:
-        log("[auth] PKCE failed (no device fallback; double mode keeps channels pure)")
+        log(
+            "[auth] PKCE failed (device fallback off; "
+            "set cpa_allow_device_flow_fallback=true to enable)"
+        )
 
-    # 2) browser Allow: short timeout so mint-queue cannot hang forever
+    # 3) browser Allow: short timeout so mint-queue cannot hang forever
     try:
         from sso_to_auth import sso_to_token_via_browser_consent
 
@@ -514,35 +593,102 @@ def _write_and_probe_one(
             f"{models_probe.get('error') or models_probe.get('status')}"
         )
 
-    # 10: mini chat 探针（POST /responses）；失败不单独判死，写入结果供观测
+    # 10: mini chat 探针（POST /responses）；新 token 常瞬时 deny → 延迟重试
     chat_probe: dict[str, Any] | None = None
     if models_ok and has_g45 and not fake_alive:
         try:
-            chat_probe = probe_mini_response(
-                str(token.get("access_token") or ""),
-                base_url=str(payload.get("base_url") or DEFAULT_BASE_URL),
-                proxy=proxy or "",
-                headers=headers if isinstance(headers, dict) else None,
-            )
-            payload["chat_probe_ok"] = bool(chat_probe.get("ok"))
-            payload["chat_probe_status"] = chat_probe.get("status")
-            log(
-                f"[auth] channel={channel} chat probe ok={chat_probe.get('ok')} "
-                f"status={chat_probe.get('status')} "
-                f"text={(chat_probe.get('text') or '')[:40]!r}"
-            )
-            # 可选硬门槛：config require_chat_probe=true 时 chat 失败也挡 CPA
-            require_chat = False
+            # srcback: initial_delay=3 + retries [5,15,30]
+            conf_chat: dict[str, Any] = {}
             try:
                 conf_path = Path(__file__).resolve().parent / "config.json"
                 if conf_path.is_file():
-                    conf = json.loads(conf_path.read_text(encoding="utf-8"))
-                    require_chat = bool(
-                        conf.get("require_chat_probe")
-                        or conf.get("requireChatProbe")
-                    )
+                    conf_chat = json.loads(conf_path.read_text(encoding="utf-8"))
+                    if not isinstance(conf_chat, dict):
+                        conf_chat = {}
             except Exception:
-                require_chat = False
+                conf_chat = {}
+            try:
+                initial_delay = float(
+                    conf_chat.get("cpa_probe_chat_initial_delay_sec")
+                    if conf_chat.get("cpa_probe_chat_initial_delay_sec") is not None
+                    else conf_chat.get("cpaProbeChatInitialDelaySec")
+                    if conf_chat.get("cpaProbeChatInitialDelaySec") is not None
+                    else 3.0
+                )
+            except Exception:
+                initial_delay = 3.0
+            initial_delay = max(0.0, min(initial_delay, 30.0))
+            raw_delays = conf_chat.get("cpa_probe_chat_retry_delays")
+            if raw_delays is None:
+                raw_delays = conf_chat.get("cpaProbeChatRetryDelays")
+            retry_delays: list[float]
+            if raw_delays is None:
+                retry_delays = [5.0, 15.0, 30.0]
+            elif isinstance(raw_delays, (list, tuple)):
+                retry_delays = []
+                for x in raw_delays:
+                    try:
+                        retry_delays.append(float(x))
+                    except Exception:
+                        pass
+            else:
+                retry_delays = [5.0, 15.0, 30.0]
+            retry_delays = [max(0.0, min(d, 120.0)) for d in retry_delays][:5]
+
+            if initial_delay > 0:
+                log(
+                    f"[auth] channel={channel} chat probe wait "
+                    f"{initial_delay:.0f}s (new-token soft window)…"
+                )
+                time.sleep(initial_delay)
+
+            attempts = 1 + len(retry_delays)
+            chat_probe = {"ok": False, "error": "not attempted"}
+            for ai in range(attempts):
+                chat_probe = probe_mini_response(
+                    str(token.get("access_token") or ""),
+                    base_url=str(payload.get("base_url") or DEFAULT_BASE_URL),
+                    proxy=proxy or "",
+                    headers=headers if isinstance(headers, dict) else None,
+                )
+                log(
+                    f"[auth] channel={channel} chat probe "
+                    f"attempt={ai + 1}/{attempts} ok={chat_probe.get('ok')} "
+                    f"status={chat_probe.get('status')} "
+                    f"text={(chat_probe.get('text') or '')[:40]!r}"
+                )
+                if chat_probe.get("ok"):
+                    break
+                # 瞬时 permission-denied / 5xx 才重试
+                st = int(chat_probe.get("status") or 0)
+                err_l = str(chat_probe.get("error") or "").lower()
+                retryable = st in (0, 403, 429, 500, 502, 503, 504) or any(
+                    k in err_l
+                    for k in (
+                        "permission",
+                        "denied",
+                        "timeout",
+                        "temporarily",
+                        "rate",
+                    )
+                )
+                if ai < len(retry_delays) and retryable:
+                    d = retry_delays[ai]
+                    log(
+                        f"[auth] channel={channel} chat probe retry after "
+                        f"{d:.0f}s…"
+                    )
+                    time.sleep(d)
+                    continue
+                break
+
+            payload["chat_probe_ok"] = bool(chat_probe.get("ok"))
+            payload["chat_probe_status"] = chat_probe.get("status")
+            # 可选硬门槛：config require_chat_probe=true 时 chat 失败也挡 CPA
+            require_chat = bool(
+                conf_chat.get("require_chat_probe")
+                or conf_chat.get("requireChatProbe")
+            )
             if require_chat and not chat_probe.get("ok"):
                 fake_alive = True
                 log(

@@ -407,6 +407,42 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
       config.cpa_mint_workers = Math.max(0, Math.min(8, Math.floor(mintWorkers)));
     }
   }
+
+  // srcback-aligned PKCE：cookie-setter 优先 + chrome131；device fallback 默认关
+  {
+    const preferCs = (settings as { cpaPreferCookieSetterPkce?: boolean })
+      .cpaPreferCookieSetterPkce;
+    config.cpa_prefer_cookie_setter_pkce =
+      preferCs === undefined ? true : preferCs === true;
+    const imp = String(
+      (settings as { cpaMintImpersonate?: string }).cpaMintImpersonate || 'chrome131'
+    ).trim();
+    config.cpa_mint_impersonate = imp || 'chrome131';
+    const allowDev = (settings as { cpaAllowDeviceFlowFallback?: boolean })
+      .cpaAllowDeviceFlowFallback;
+    // 默认 false：device 易假活（models 过 chat 403）
+    config.cpa_allow_device_flow_fallback = allowDev === true;
+    const chatDelay = Number(
+      (settings as { cpaProbeChatInitialDelaySec?: number })
+        .cpaProbeChatInitialDelaySec ?? 3
+    );
+    if (Number.isFinite(chatDelay)) {
+      config.cpa_probe_chat_initial_delay_sec = Math.max(
+        0,
+        Math.min(30, Number(chatDelay))
+      );
+    }
+    const delays = (settings as { cpaProbeChatRetryDelays?: number[] })
+      .cpaProbeChatRetryDelays;
+    if (Array.isArray(delays) && delays.length) {
+      config.cpa_probe_chat_retry_delays = delays
+        .map((x) => Number(x))
+        .filter((x) => Number.isFinite(x) && x >= 0)
+        .slice(0, 5);
+    } else {
+      config.cpa_probe_chat_retry_delays = [5, 15, 30];
+    }
+  }
   // 执行顺序：["C","A","B"] 等；缺省 A→B→C
   {
     const rawOrder = (settings as { registerPlanOrder?: unknown }).registerPlanOrder;

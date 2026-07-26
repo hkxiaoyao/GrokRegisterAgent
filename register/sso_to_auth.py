@@ -1105,8 +1105,8 @@ return {
         m = re.search(r"[?&#]code=([^&]+)", url)
         return urllib.parse.unquote(m.group(1)) if m else ""
 
-    def _click_allow(page) -> str:
-        """只点 Allow/允许；绝不点 Continue/Next/登录。"""
+    def _dismiss_cookie_banner(page) -> str:
+        """Cookie/隐私横幅会挡住 OAuth Allow；先点 Accept/全部接受（精确文案）。"""
         try:
             return str(
                 page.run_js(
@@ -1118,12 +1118,61 @@ function isVisible(n) {
   const r = n.getBoundingClientRect();
   return r.width > 0 && r.height > 0;
 }
-const deny = /continue|next|sign\s*in|log\s*in|cancel|deny|拒绝|取消|继续|下一步|登录|create\s*account|sign\s*up/i;
+const deny = /reject|deny|拒绝|拒绝全部|仅必要|必要|manage|设置|customize|偏好|关闭|close|cancel|取消/i;
+const okExact = /^(Accept all|Accept All|Accept|全部接受|接受全部|同意全部|允许全部|I agree|Agree)$/i;
+const okSoft = /accept all|accept cookies|全部接受|接受全部|同意全部|允许全部|同意并继续/i;
+const nodes = Array.from(document.querySelectorAll(
+  'button, [role="button"], input[type="submit"], a[role="button"]'
+)).filter(isVisible);
+let t = nodes.find(b => {
+  const text = (b.innerText || b.textContent || b.value || '').replace(/\s+/g, ' ').trim();
+  if (!text || text.length > 40 || deny.test(text)) return false;
+  return okExact.test(text);
+});
+if (!t) {
+  t = nodes.find(b => {
+    const text = (b.innerText || b.textContent || b.value || '').replace(/\s+/g, ' ').trim();
+    if (!text || text.length > 40 || deny.test(text)) return false;
+    return okSoft.test(text);
+  });
+}
+if (!t) return '';
+try { t.scrollIntoView({block:'center'}); } catch (e) {}
+// real click preferred: dispatch mouse events then click
+try {
+  const r = t.getBoundingClientRect();
+  const x = r.x + r.width/2, y = r.y + r.height/2;
+  for (const typ of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+    t.dispatchEvent(new MouseEvent(typ, {bubbles:true, cancelable:true, clientX:x, clientY:y, view:window}));
+  }
+} catch (e) { try { t.click(); } catch (e2) {} }
+return (t.innerText || t.value || 'Accept').trim().slice(0, 32);
+"""
+                )
+                or ""
+            )
+        except Exception:
+            return ""
+
+    def _click_allow(page) -> str:
+        """只点 Allow/允许；绝不点 Continue/Next/登录。优先真实点击坐标。"""
+        try:
+            return str(
+                page.run_js(
+                    r"""
+function isVisible(n) {
+  if (!n) return false;
+  const s = window.getComputedStyle(n);
+  if (s.display === 'none' || s.visibility === 'hidden' || Number(s.opacity) === 0) return false;
+  const r = n.getBoundingClientRect();
+  return r.width > 0 && r.height > 0;
+}
+const deny = /continue|next|sign\s*in|log\s*in|cancel|deny|拒绝|取消|继续|下一步|登录|create\s*account|sign\s*up|accept all|cookie/i;
 const ok = /^(允许|allow|authorize|approve|同意|批准|grant)$|允许|allow access|authorize app|approve access|同意授权/i;
 const nodes = Array.from(document.querySelectorAll(
   'button, [role="button"], input[type="submit"], a[role="button"], a.button'
 )).filter(isVisible);
-// 优先精确文案
+// 优先精确文案（srcback hard rule: exact text only）
 let t = nodes.find(b => {
   const text = (b.innerText || b.textContent || b.value || '').replace(/\s+/g, ' ').trim();
   if (!text || deny.test(text)) return false;
@@ -1137,7 +1186,16 @@ if (!t) {
   });
 }
 if (!t) return '';
-t.click();
+try { t.scrollIntoView({block:'center'}); } catch (e) {}
+try {
+  const r = t.getBoundingClientRect();
+  const x = r.x + r.width/2, y = r.y + r.height/2;
+  for (const typ of ['pointerdown','mousedown','pointerup','mouseup','click']) {
+    t.dispatchEvent(new MouseEvent(typ, {bubbles:true, cancelable:true, clientX:x, clientY:y, view:window}));
+  }
+} catch (e) {
+  try { t.click(); } catch (e2) {}
+}
 return (t.innerText || t.value || 'Allow').trim().slice(0, 32);
 """
                 )
@@ -1289,8 +1347,12 @@ return (t.innerText || t.value || 'Allow').trim().slice(0, 32);
             else:
                 stuck_authorize_since = None
 
-            # consent / 任意页：尝试点 Allow（禁止 Continue）
+            # consent / 任意页：先关 cookie 横幅，再点 Allow（禁止 Continue）
             if on_consent or on_authorize or "accounts.x.ai" in ul or "auth.x.ai" in ul:
+                dismissed = _dismiss_cookie_banner(page)
+                if dismissed:
+                    log(f"  🔑 browser consent cookie-banner={dismissed}")
+                    time.sleep(0.35)
                 clicked = _click_allow(page)
                 if clicked:
                     log(f"  🔑 browser consent click={clicked}")
