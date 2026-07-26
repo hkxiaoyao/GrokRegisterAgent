@@ -1219,7 +1219,10 @@ export function SettingsForm() {
               bits.push('Auth 关');
             }
             if (draft.skipBotFlag1OnMint !== false) bits.push('跳过Bot/风控');
-            else bits.push('Bot仍mint');
+            else {
+              bits.push('Bot仍mint');
+              if (draft.riskMintLightAttempts !== false) bits.push('风控1+1');
+            }
             if (draft.autoResignOn401 === true) bits.push('401重签');
             if (draft.resignPushRemote === true) bits.push('重签后推');
             if (draft.enableNsfw) bits.push('Nsfw');
@@ -1268,6 +1271,14 @@ export function SettingsForm() {
               checked={draft.skipBotFlag1OnMint !== false}
               onChange={(v) => update('skipBotFlag1OnMint', v)}
             />
+            {draft.skipBotFlag1OnMint === false && (
+              <ToggleRow
+                label="风控号减尝试"
+                hint="开=风控号 double 只跑 1×device + 1×pkce（非 3+2），省时间；关=完整内部重试。仅「跳过 Mint」关闭时生效。写入 risk_mint_light_attempts"
+                checked={draft.riskMintLightAttempts !== false}
+                onChange={(v) => update('riskMintLightAttempts', v)}
+              />
+            )}
             {draft.autoAuthExport !== false && (
               <>
                 <div className="grid gap-3 sm:grid-cols-2">

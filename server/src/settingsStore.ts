@@ -357,6 +357,10 @@ function merge(partial: unknown): AppSettings {
       (p as AppSettings).skipBotFlag1OnMint,
       DEFAULT_SETTINGS.skipBotFlag1OnMint
     ),
+    riskMintLightAttempts: asBool(
+      (p as AppSettings).riskMintLightAttempts,
+      DEFAULT_SETTINGS.riskMintLightAttempts
+    ),
     ssoCheckUseProxy: asBool(
       (p as AppSettings).ssoCheckUseProxy,
       DEFAULT_SETTINGS.ssoCheckUseProxy

@@ -340,6 +340,14 @@ export interface AppSettings {
    */
   skipBotFlag1OnMint: boolean;
   /**
+   * 风控号仍 mint 时减少通道内部重试。
+   * true（默认）= double 强制 1×device + 1×pkce（非 3+2）；
+   * false=完整内部重试。
+   * 仅当 skipBotFlag1OnMint=false 且 get-user 判 bot/高风险时生效。
+   * 写入 Python：risk_mint_light_attempts
+   */
+  riskMintLightAttempts: boolean;
+  /**
    * 号池 SSO 验活是否走 HTTP 代理。
    * 需同时 proxyEnabled=true 且配置了 proxy 才实际走代理。
    */
@@ -478,6 +486,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   resignPushRemote: false,
   proxyIpIntervalSec: 0,
   skipBotFlag1OnMint: true,
+  riskMintLightAttempts: true,
   /** 号池验活默认走代理（若总开关与 proxy 已配） */
   ssoCheckUseProxy: true,
   /** 注册成功后自动号池 SSO 验活 */

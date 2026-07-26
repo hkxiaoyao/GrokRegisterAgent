@@ -87,6 +87,47 @@ def _skip_bot_flag_on_mint_enabled() -> bool:
     return True
 
 
+
+def _risk_mint_light_attempts_enabled() -> bool:
+    """config/env: bot/high-risk 仍 mint 时减通道重试。Default True.
+
+    Keys: risk_mint_light_attempts / riskMintLightAttempts / RISK_MINT_LIGHT_ATTEMPTS
+    true  → double: device 1 次 + pkce 1 次（非 3+2）
+    false → 完整内部重试
+    仅当 skip_bot_flag_on_mint=false 且 gate blocked 时生效。
+    """
+    env = (
+        os.environ.get("RISK_MINT_LIGHT_ATTEMPTS")
+        or os.environ.get("risk_mint_light_attempts")
+        or ""
+    ).strip().lower()
+    if env in ("0", "false", "no", "off"):
+        return False
+    if env in ("1", "true", "yes", "on"):
+        return True
+    conf_path = Path(__file__).resolve().parent / "config.json"
+    try:
+        conf = json.loads(conf_path.read_text(encoding="utf-8"))
+        for k in (
+            "risk_mint_light_attempts",
+            "riskMintLightAttempts",
+            "risk_mint_light",
+        ):
+            if k not in conf:
+                continue
+            v = conf.get(k)
+            if isinstance(v, bool):
+                return v
+            s = str(v or "").strip().lower()
+            if s in ("0", "false", "no", "off"):
+                return False
+            if s in ("1", "true", "yes", "on"):
+                return True
+    except Exception:
+        pass
+    return True
+
+
 def probe_sso_oauth_gate(
     sso: str,
     *,
@@ -1072,6 +1113,7 @@ def sso_to_cpa_auth(
 
     # Castle bot / 高风险：默认跳过 mint（可关 skip_bot_flag_on_mint 仍尝试）
     gate = probe_sso_oauth_gate(sso, proxy=proxy or "", log=log)
+    risk_light = False
     if gate.get("blocked"):
         if _skip_bot_flag_on_mint_enabled():
             return {
@@ -1087,10 +1129,16 @@ def sso_to_cpa_auth(
                     "userId": gate.get("userId"),
                 },
             }
+        risk_light = bool(_risk_mint_light_attempts_enabled())
         log(
             "[auth] ⚠ bot/high-risk 仍继续 mint（skip_bot_flag_on_mint=false）"
             f" email={email or gate.get('email') or '-'} "
             f"bot={gate.get('botFlagSource') or '-'} risk={gate.get('riskLevel') or '-'}"
+            + (
+                " · light_attempts=1+1（risk_mint_light_attempts=true）"
+                if risk_light
+                else " · light_attempts=off（完整重试）"
+            )
         )
     if not email and gate.get("email"):
         email = str(gate.get("email") or "")
@@ -1138,7 +1186,11 @@ def sso_to_cpa_auth(
             mint_err = ""
             # pkce: pure protocol + browser callback (never device-fallback into *-pkce)
             # device: retry TLS flakiness
-            attempts = 3 if ch == "device" else 2
+            # 风控号 light：强制每通道 1 次（double=1 device + 1 pkce）
+            if risk_light:
+                attempts = 1
+            else:
+                attempts = 3 if ch == "device" else 2
             for ai in range(attempts):
                 try:
                     if ch == "pkce":

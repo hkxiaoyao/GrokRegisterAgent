@@ -484,6 +484,9 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   // Bot/高风险是否跳过 mint（默认 true；关=仍尝试，避免策略松动丢号）
   config.skip_bot_flag_on_mint =
     (settings as { skipBotFlag1OnMint?: boolean }).skipBotFlag1OnMint !== false;
+  // 风控号仍 mint 时减通道重试（默认 true：double=1+1）
+  config.risk_mint_light_attempts =
+    (settings as { riskMintLightAttempts?: boolean }).riskMintLightAttempts !== false;
 
   // 推送：允许(push*) 与 自动(autoPush*) 分离；注册成功只跟自动走
   const allowSsoG2 = settings.pushSsoToGrok2api === true;
@@ -537,6 +540,7 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
         `planC=${!!config.register_plan_c_enabled} ` +
         `planOrder=${Array.isArray(config.register_plan_order) ? (config.register_plan_order as string[]).join('>') : 'A>B>C'} ` +
         `cpa_mint_mode=${config.cpa_mint_mode || 'pkce'} skip_bot_mint=${config.skip_bot_flag_on_mint !== false} ` +
+        `risk_light=${config.risk_mint_light_attempts !== false} ` +
         `pure=${!!config.register_pure_browser} protocol_mail=${!!config.protocol_mail_enabled} ` +
         `mint_budget=${config.cpa_mint_max_attempts ?? 2} ` +
         `cpa_remote=${config.cpa_remote_url ? 'set' : 'off'}`

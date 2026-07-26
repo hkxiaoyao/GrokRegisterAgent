@@ -44,6 +44,8 @@
     "_comment_cpa_chat_probe": "mint 后 chat 探针：先等 initial_delay，再按 delays 重试瞬时 deny",
     "skip_bot_flag_on_mint": true,
     "_comment_skip_bot_flag_on_mint": "true=bot/高风险号跳过 mint（省时间，UI: Bot/风控号跳过 Mint）；false=仍尝试 mint（可补签旧号）",
+    "risk_mint_light_attempts": true,
+    "_comment_risk_mint_light_attempts": "true=风控号仍 mint 时 double 强制 1×device+1×pkce（非 3+2）；false=完整内部重试。仅 skip_bot_flag_on_mint=false 时生效",
     "require_grok_45": true,
     "_comment_cpa_mint_mode": "pkce | device | double（double=两通道各写 auth 并分别测活，互不影响）",
     "_comment_require_grok_45": "mint 后 GET /models 无 grok-4.5 则不推 CPA",
