@@ -113,6 +113,10 @@ function AuthQueueMetricsInline() {
     updated_iso?: string;
     stale?: boolean;
     fail_by_status?: Record<string, number>;
+    fail_status_ratio_pct?: Record<string, number>;
+    mint_retry_pending?: number;
+    mint_max_attempts?: number;
+    mint_budget_exhausted_total?: number;
   } | null>(null);
 
   useEffect(() => {
@@ -143,11 +147,27 @@ function AuthQueueMetricsInline() {
   const fail = m?.done_fail ?? 0;
   const qmax = m?.queue_max ?? 0;
   const failBy = m?.fail_by_status || {};
+  const ratio = m?.fail_status_ratio_pct || {};
+  const focusKeys = [
+    'mint_queue_full',
+    'mint_denied_castle',
+    'mint_oauth_fail'
+  ] as const;
+  const focusChips = focusKeys
+    .map((k) => {
+      const n = Number(failBy[k] || 0);
+      const pct = Number(ratio[k] || 0);
+      return { k, n, pct };
+    })
+    .filter((x) => x.n > 0 || x.pct > 0);
   const topFail = Object.entries(failBy)
     .map(([k, v]) => [k, Number(v) || 0] as const)
-    .filter(([, n]) => n > 0)
+    .filter(([k, n]) => n > 0 && !focusKeys.includes(k as (typeof focusKeys)[number]))
     .sort((a, b) => b[1] - a[1])
-    .slice(0, 4);
+    .slice(0, 3);
+  const retryPending = Number(m?.mint_retry_pending || 0);
+  const budgetEx = Number(m?.mint_budget_exhausted_total || 0);
+  const maxAtt = m?.mint_max_attempts;
 
   return (
     <div className="border-b border-border/60 px-3 py-2.5">
@@ -187,12 +207,45 @@ function AuthQueueMetricsInline() {
           <div className="text-[15px] font-semibold tabular-nums text-amber-600">{fail}</div>
         </div>
       </div>
-      {topFail.length > 0 ? (
+      {(retryPending > 0 || budgetEx > 0 || maxAtt != null) && (
+        <div className="mt-2 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
+          {maxAtt != null ? (
+            <span className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5">
+              mint预算:{String(maxAtt)}
+            </span>
+          ) : null}
+          {retryPending > 0 ? (
+            <span className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5">
+              待重试:{retryPending}
+            </span>
+          ) : null}
+          {budgetEx > 0 ? (
+            <span className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5">
+              预算用尽:{budgetEx}
+            </span>
+          ) : null}
+        </div>
+      )}
+      {focusChips.length > 0 ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {topFail.map(([k, n]) => (
+          {focusChips.map(({ k, n, pct }) => (
             <span
               key={k}
               className="rounded-full border border-border/60 bg-muted/40 px-2 py-0.5 text-[10px] text-muted-foreground"
+              title={`${k} count=${n} ratio=${pct}%`}
+            >
+              {k}:{n}
+              {pct > 0 ? `(${pct}%)` : ''}
+            </span>
+          ))}
+        </div>
+      ) : null}
+      {topFail.length > 0 ? (
+        <div className="mt-1.5 flex flex-wrap gap-1.5">
+          {topFail.map(([k, n]) => (
+            <span
+              key={k}
+              className="rounded-full border border-border/50 bg-muted/30 px-2 py-0.5 text-[10px] text-muted-foreground/90"
               title={k}
             >
               {k}:{n}

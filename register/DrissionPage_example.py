@@ -1802,7 +1802,18 @@ def _pure_browser_mode() -> bool:
     """True = Plan A/B 禁用协议 CreateEmail/Verify + hybrid 收尾，走纯 UI。
 
     config: register_pure_browser=true 或 protocol_mail_enabled=false
+    env: REGISTER_PURE_BROWSER / PURE_BROWSER / PROTOCOL_MAIL_ENABLED
     """
+    env_pure = (
+        os.environ.get("REGISTER_PURE_BROWSER")
+        or os.environ.get("PURE_BROWSER")
+        or ""
+    ).strip().lower()
+    if env_pure in ("1", "true", "yes", "on"):
+        return True
+    env_pm = (os.environ.get("PROTOCOL_MAIL_ENABLED") or "").strip().lower()
+    if env_pm in ("0", "false", "no", "off"):
+        return True
     try:
         import json as _j
         conf = _j.loads(
@@ -4574,10 +4585,11 @@ function score(n){
   if(!text||text.length>36) return -1;
   if(/google|apple|github|cookie|cancel|关闭|close|reject|skip|稍后|later|notnow|dismiss/i.test(t)) return -1;
   let s=0;
-  if(t==='save'||text==='Save'||text==='保存') s+=220;
-  if(t.includes('save')||text.includes('保存')) s+=180;
-  if(t==='continue'||text==='继续'||text.includes('继续')) s += preferSave ? 100 : 160;
-  if(t.includes('continue')||t.includes('confirm')||text.includes('确认')) s+=90;
+  if(t==='save'||text==='Save'||text==='保存') s+=320;
+  if(t.includes('save')||text.includes('保存')) s+=240;
+  // Save-first：Continue 明显降权，避免先点 Continue 再二次 Save
+  if(t==='continue'||text==='继续'||text.includes('继续')) s += preferSave ? 40 : 160;
+  if(t.includes('continue')||t.includes('confirm')||text.includes('确认')) s += preferSave ? 30 : 90;
   if(t.includes('next')||text.includes('下一步')||t.includes('submit')) s+=70;
   if(n.type==='submit') s+=30;
   try{
@@ -4688,7 +4700,26 @@ return true;
                 time.sleep(0.45)
                 continue
 
-        time.sleep(0.15 + secrets.randbelow(12) / 100.0)
+        # Save-first：填完后短等 Save 出现，再点（Continue 降权）
+        time.sleep(0.12 + secrets.randbelow(10) / 100.0)
+        wait_save_deadline = time.time() + 0.85
+        while time.time() < wait_save_deadline:
+            try:
+                has_save = page.run_js(
+                    r"""
+function isVisible(n){if(!n)return false;const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden')return false;const r=n.getBoundingClientRect();return r.width>0&&r.height>0;}
+const nodes=[...document.querySelectorAll('button,[role=button],input[type=submit]')].filter(isVisible);
+return nodes.some(n=>{
+  const t=(n.innerText||n.textContent||n.getAttribute('aria-label')||n.value||'').replace(/\s+/g,' ').trim().toLowerCase();
+  return t==='save'||t==='保存'||t.includes('save')||t.includes('保存');
+});
+"""
+                )
+                if has_save:
+                    break
+            except Exception:
+                pass
+            time.sleep(0.12)
         lbl = _click_age_submit(prefer_save=True)
         if not lbl:
             _log_throttled("no-btn", "[Debug] 年龄门：年份已填，未找到 Save/Continue")
@@ -4696,22 +4727,37 @@ return true;
             continue
         _log_counts["submitted"] = _log_counts.get("submitted", 0) + 1
         print(f"[*] 年龄门：已提交出生年 {year_s} via={lbl!r} fill={typed}")
-        time.sleep(1.15)
+        time.sleep(0.95)
         if not detect_age_gate():
             print("[*] 年龄门：弹窗已关闭")
             return True
-        print("[*] 年龄门：已点提交，弹窗可能仍在，再填一次并优先 Save…")
-        if _year_value() != year_s:
-            _cdp_type_year(year_s)
-        time.sleep(0.2)
-        lbl2 = _click_age_submit(prefer_save=True)
-        if lbl2:
-            print(f"[*] 年龄门：二次提交 via={lbl2!r}")
-        time.sleep(1.0)
-        if not detect_age_gate():
-            print("[*] 年龄门：弹窗已关闭")
-            return True
-        time.sleep(0.55)
+        # 若首点落在 Continue 类按钮，立刻再点 Save（年份仍在则不重填）
+        lbl_l = str(lbl or "").lower()
+        if "save" not in lbl_l and "保存" not in str(lbl or ""):
+            print("[*] 年龄门：首点非 Save，立即补点 Save…")
+            if _year_value() != year_s:
+                _cdp_type_year(year_s)
+            time.sleep(0.12)
+            lbl2 = _click_age_submit(prefer_save=True)
+            if lbl2:
+                print(f"[*] 年龄门：Save 补点 via={lbl2!r}")
+            time.sleep(0.9)
+            if not detect_age_gate():
+                print("[*] 年龄门：弹窗已关闭")
+                return True
+        else:
+            print("[*] 年龄门：已点 Save，弹窗可能仍在，再填一次并优先 Save…")
+            if _year_value() != year_s:
+                _cdp_type_year(year_s)
+            time.sleep(0.15)
+            lbl2 = _click_age_submit(prefer_save=True)
+            if lbl2:
+                print(f"[*] 年龄门：二次提交 via={lbl2!r}")
+            time.sleep(0.9)
+            if not detect_age_gate():
+                print("[*] 年龄门：弹窗已关闭")
+                return True
+        time.sleep(0.45)
 
     try:
         if not detect_age_gate():

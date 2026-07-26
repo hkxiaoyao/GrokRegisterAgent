@@ -2446,11 +2446,15 @@ return null;
                     err = str(st.get("err") or "")
                     fail_ui = bool(st.get("failUi"))
                     if status and status != last_status:
-                        self._lg(
-                            f"[*] turnstile inject status={status} "
-                            f"host={st.get('host')} inpLen={st.get('inpLen')} "
-                            f"err={err!r} failUi={fail_ui} box={st.get('box')}"
-                        )
+                        # 300010/600010：只打一行 hard-fail，避免 status 抖动刷屏
+                        if err in ("300010", "600010") and status in ("error", "script-fail", "render-fail"):
+                            pass
+                        else:
+                            self._lg(
+                                f"[*] turnstile inject status={status} "
+                                f"host={st.get('host')} inpLen={st.get('inpLen')} "
+                                f"err={err!r} failUi={fail_ui} box={st.get('box')}"
+                            )
                         last_status = status
                         if status == "rendered":
                             rendered_at = time.time()
@@ -2497,6 +2501,21 @@ return frames.some(f=>{
                         if status == "error" or fail_ui:
                             inject_failed_hard = True
                             last_err_code = err or last_err_code
+                        # 硬失败码：立刻结束本轮，禁止 shadow 连点与 re-render
+                        if err in ("300010", "600010") or last_err_code in ("300010", "600010"):
+                            inject_failed_hard = True
+                            last_err_code = err or last_err_code or "600010"
+                            self._lg(
+                                f"[!] turnstile inject hard-fail err={last_err_code!r} "
+                                f"failUi={fail_ui} — stop re-render/CDP/shadow "
+                                "(300010/600010≈bot or challenge fail). "
+                                "Need cleaner browser/IP or external solver."
+                            )
+                            try:
+                                self.last_turnstile_hard_fail = str(last_err_code)
+                            except Exception:
+                                pass
+                            break
                         if reinjects < 1 and err not in ("300010", "600010"):
                             # 300010/600010 = bot/challenge fail，重挂同一会话通常仍失败
                             reinjects += 1
@@ -2532,10 +2551,12 @@ return frames.some(f=>{
                         if waited < auto_wait_s:
                             time.sleep(0.45)
                             continue
+                    if inject_failed_hard:
+                        break
                     if status in ("rendered", "waiting-api", "init") or (
                         not status and time.time() + 1 < t_end
                     ):
-                        # 最多 2 次 shadow；避免 CDP 宿主坐标（本环境易 Verification failed）
+                        # 最多 2 次 shadow；硬失败后 0 次
                         if clicks < 2:
                             clicks += 1
                             shadow_ok = False

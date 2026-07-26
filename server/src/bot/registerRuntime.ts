@@ -371,6 +371,42 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   config.register_plan_c_enabled = planC;
   // 兼容旧字段：register_mode=hybrid 当 C 开
   config.register_mode = planC ? 'hybrid' : 'browser';
+
+  // pure browser：禁协议 CreateEmail/Verify 探测（消缺模块噪声）
+  // 默认 true（与当前生产 pure 目标一致）；settings 显式 false 可关
+  {
+    const pureRaw = (settings as { registerPureBrowser?: boolean }).registerPureBrowser;
+    const pure =
+      pureRaw === undefined ? true : pureRaw === true;
+    const protocolMailRaw = (settings as { protocolMailEnabled?: boolean }).protocolMailEnabled;
+    const protocolMail =
+      protocolMailRaw === undefined ? !pure : protocolMailRaw === true;
+    config.register_pure_browser = pure;
+    config.protocol_mail_enabled = protocolMail && !pure ? true : false;
+  }
+
+  // mint 预算 / 待重试（背压不丢号）
+  {
+    const maxAtt = Number(
+      (settings as { cpaMintMaxAttempts?: number }).cpaMintMaxAttempts ?? 2
+    );
+    if (Number.isFinite(maxAtt)) {
+      config.cpa_mint_max_attempts = Math.max(0, Math.min(8, Math.floor(maxAtt)));
+    }
+    const retryMax = Number(
+      (settings as { cpaMintRetryQueueMax?: number }).cpaMintRetryQueueMax ?? 200
+    );
+    if (Number.isFinite(retryMax) && retryMax > 0) {
+      config.cpa_mint_retry_queue_max = Math.max(8, Math.min(2000, Math.floor(retryMax)));
+    }
+    const mintWorkers = Number(
+      (settings as { cpaMintWorkers?: number }).cpaMintWorkers ??
+        (settings as { cpa_mint_workers?: number }).cpa_mint_workers
+    );
+    if (Number.isFinite(mintWorkers)) {
+      config.cpa_mint_workers = Math.max(0, Math.min(8, Math.floor(mintWorkers)));
+    }
+  }
   // 执行顺序：["C","A","B"] 等；缺省 A→B→C
   {
     const rawOrder = (settings as { registerPlanOrder?: unknown }).registerPlanOrder;
@@ -465,6 +501,8 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
         `planC=${!!config.register_plan_c_enabled} ` +
         `planOrder=${Array.isArray(config.register_plan_order) ? (config.register_plan_order as string[]).join('>') : 'A>B>C'} ` +
         `cpa_mint_mode=${config.cpa_mint_mode || 'pkce'} skip_bot_mint=${config.skip_bot_flag_on_mint !== false} ` +
+        `pure=${!!config.register_pure_browser} protocol_mail=${!!config.protocol_mail_enabled} ` +
+        `mint_budget=${config.cpa_mint_max_attempts ?? 2} ` +
         `cpa_remote=${config.cpa_remote_url ? 'set' : 'off'}`
     );
   } catch {

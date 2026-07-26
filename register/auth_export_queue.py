@@ -70,12 +70,19 @@ def classify_mint_status(
 
     返回值（稳定字符串，供日志与计数）:
       ok | mint_queue_full | mint_skipped_bot | mint_denied_castle |
-      mint_oauth_fail | mint_fail | sso_g2_fail | empty_sso | worker_error | unknown
+      mint_oauth_fail | mint_budget_exhausted | mint_retry_dropped |
+      mint_fail | sso_g2_fail | empty_sso | worker_error | unknown
     """
     if backpressure:
         return "mint_queue_full"
     if result and result.get("ok"):
         return "ok"
+    if result and result.get("status"):
+        st = str(result.get("status") or "").strip()
+        if st and st not in ("unknown", "mint_fail"):
+            # 尊重上游已分类 status（预算/背压/跳过等）
+            if st.startswith("mint_") or st in ("empty_sso", "sso_g2_fail", "worker_error"):
+                return st
     if result and result.get("skipped_bot_flag"):
         return "mint_skipped_bot"
 
@@ -83,6 +90,10 @@ def classify_mint_status(
     err_l = err.lower()
     if not err_l:
         return "unknown"
+    if "budget exhausted" in err_l or "mint_budget_exhausted" in err_l:
+        return "mint_budget_exhausted"
+    if "retry queue full" in err_l or "mint_retry_dropped" in err_l:
+        return "mint_retry_dropped"
 
     # Castle / bot 风控（含 skip 与 deny 文案）
     castle_keys = (
@@ -265,6 +276,49 @@ def queue_stats() -> dict[str, Any]:
         qsize = 0
     with _lock:
         fail_by = dict(_fail_by_status)
+    # 合并 mint 池计数（含 retry / budget / status 比例）
+    mint_extra: dict[str, Any] = {}
+    try:
+        from mint_queue import queue_stats as mint_stats
+
+        ms = mint_stats()
+        m_fail = ms.get("fail_by_status") or {}
+        if isinstance(m_fail, dict):
+            for k, v in m_fail.items():
+                fail_by[str(k)] = int(fail_by.get(str(k)) or 0) + int(v or 0)
+        mint_extra = {
+            "mint_pending": ms.get("pending"),
+            "mint_queue_size": ms.get("queue_size"),
+            "mint_done_ok": ms.get("done_ok"),
+            "mint_done_fail": ms.get("done_fail"),
+            "mint_workers": ms.get("workers"),
+            "mint_queue_max": ms.get("queue_max"),
+            "mint_retry_pending": ms.get("retry_pending"),
+            "mint_retry_queued_total": ms.get("retry_queued_total"),
+            "mint_retry_requeued_total": ms.get("retry_requeued_total"),
+            "mint_retry_dropped_total": ms.get("retry_dropped_total"),
+            "mint_max_attempts": ms.get("mint_max_attempts"),
+            "mint_budget_exhausted_total": ms.get("budget_exhausted_total"),
+            "mint_fail_by_status": m_fail,
+            "mint_fail_status_ratio_pct": ms.get("fail_status_ratio_pct") or {},
+        }
+    except Exception:
+        mint_extra = {}
+
+    focus_keys = (
+        "mint_queue_full",
+        "mint_denied_castle",
+        "mint_oauth_fail",
+        "mint_skipped_bot",
+        "mint_budget_exhausted",
+        "mint_retry_dropped",
+        "mint_fail",
+    )
+    focus_total = sum(int(fail_by.get(k) or 0) for k in focus_keys) or 0
+    ratio_pct = {
+        k: (round(100.0 * int(fail_by.get(k) or 0) / focus_total, 1) if focus_total else 0.0)
+        for k in focus_keys
+    }
     stats: dict[str, Any] = {
         "pending": max(0, _pending),
         "queue_size": qsize,
@@ -273,6 +327,8 @@ def queue_stats() -> dict[str, Any]:
         "workers": _worker_count,
         "queue_max": _queue_max,
         "fail_by_status": fail_by,
+        "fail_status_ratio_pct": ratio_pct,
+        **mint_extra,
     }
     try:
         from auth_queue_metrics import write_metrics
@@ -994,13 +1050,31 @@ def _process_job(job: dict[str, Any]) -> None:
                     )
                 elif mq.get("use_inline"):
                     handed = False
+                elif mq.get("status") == "mint_budget_exhausted":
+                    step_ok = False
+                    fail_statuses.append("mint_budget_exhausted")
+                    _log(
+                        f"[auth-queue][{wid}] mint 预算用尽 status=mint_budget_exhausted "
+                        f"email={email or '-'} attempts={mq.get('attempts')}/"
+                        f"{mq.get('max_attempts')}"
+                    )
+                    handed = True
                 elif mq.get("backpressure"):
                     step_ok = False
-                    status = classify_mint_status(backpressure=True)
+                    status = str(
+                        mq.get("status")
+                        or classify_mint_status(backpressure=True)
+                    )
                     fail_statuses.append(status)
+                    retry_hint = (
+                        f" retry_pending={mq.get('retry_pending')}"
+                        if mq.get("retry_queued")
+                        else ""
+                    )
                     _log(
-                        f"[auth-queue][{wid}] mint 池背压，本任务 mint 未入队 "
-                        f"status={status} email={email or '-'}"
+                        f"[auth-queue][{wid}] mint 池背压，本任务 mint 未入主队列 "
+                        f"status={status} email={email or '-'}{retry_hint}"
+                        + (" · 已入待重试" if mq.get("retry_queued") else "")
                     )
                     handed = True  # 不再内联，避免双倍占坑
         except Exception as me:
@@ -1037,11 +1111,18 @@ def _process_job(job: dict[str, Any]) -> None:
         # 去重保序：同一 job 可能 sso_g2 + mint 双失败
         seen: set[str] = set()
         ordered: list[str] = []
+        # mint 池已在 mint_queue 计过的 status 不再双计
+        _mint_counted = {
+            "mint_queue_full",
+            "mint_budget_exhausted",
+            "mint_retry_dropped",
+        }
         for s in fail_statuses:
             if s and s not in seen:
                 seen.add(s)
                 ordered.append(s)
-                _bump_fail_status(s)
+                if s not in _mint_counted:
+                    _bump_fail_status(s)
         status_label = "+".join(ordered) if ordered else "unknown"
         _log(
             f"[auth-queue][{wid}] ✘ 流水线部分失败 email={email or '-'} "
