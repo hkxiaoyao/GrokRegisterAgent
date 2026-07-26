@@ -908,7 +908,11 @@ export class RegisterBot extends EventEmitter {
           createTime: outcome.createTime,
           error: outcome.error,
           botFlagSource: outcome.botFlagSource,
-          isBotFlag1: outcome.isBotFlag1
+          isBotFlag1: outcome.isBotFlag1,
+          riskLevel: outcome.riskLevel,
+          riskScore: outcome.riskScore,
+          botFlagDetails: outcome.botFlagDetails,
+          riskEvent: outcome.riskEvent
         }
       ]);
       if (!applied || applied.updated === 0) {
@@ -936,7 +940,11 @@ export class RegisterBot extends EventEmitter {
             createTime: outcome.createTime,
             error: outcome.error,
             botFlagSource: outcome.botFlagSource,
-            isBotFlag1: outcome.isBotFlag1
+            isBotFlag1: outcome.isBotFlag1,
+            riskLevel: outcome.riskLevel,
+            riskScore: outcome.riskScore,
+            botFlagDetails: outcome.botFlagDetails,
+            riskEvent: outcome.riskEvent
           }
         }
       });

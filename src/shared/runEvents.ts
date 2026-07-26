@@ -50,6 +50,17 @@ export interface AccountSsoCheck {
   error?: string;
   botFlagSource?: number | string | null;
   isBotFlag1?: boolean;
+  /** get-user riskLevel 枚举，如 USER_RISK_LEVEL_HIGH */
+  riskLevel?: string | null;
+  /**
+   * Castle 连续风险分 0.00~1.00（从 botFlagDetails 的 risk= 解析）。
+   * 无则 null（UI 显示 None 风格）。
+   */
+  riskScore?: number | null;
+  /** get-user botFlagDetails 原文（截断） */
+  botFlagDetails?: string | null;
+  /** 从 details 解析的 event，如 $registration / $login */
+  riskEvent?: string | null;
 }
 
 /** 一条完整账号记录：邮箱 + 密码 + sso，由 registerBot 从 Python stdout 关联生成 */

@@ -65,7 +65,11 @@ function resultFromAccount(a: AccountRecord): SsoCheckResult | null {
     checkedAt: typeof c.checkedAt === 'string' ? c.checkedAt : new Date().toISOString(),
     error: c.error,
     botFlagSource: c.botFlagSource,
-    isBotFlag1: c.isBotFlag1
+    isBotFlag1: c.isBotFlag1,
+    riskLevel: c.riskLevel,
+    riskScore: c.riskScore,
+    botFlagDetails: c.botFlagDetails,
+    riskEvent: c.riskEvent
   };
 }
 
@@ -289,7 +293,11 @@ export const useAccountsStore = create<AccountsState>((set, get) => ({
             createTime: r.createTime,
             error: r.error,
             botFlagSource: r.botFlagSource,
-            isBotFlag1: r.isBotFlag1
+            isBotFlag1: r.isBotFlag1,
+            riskLevel: r.riskLevel,
+            riskScore: r.riskScore,
+            botFlagDetails: r.botFlagDetails,
+            riskEvent: r.riskEvent
           }
         };
       })

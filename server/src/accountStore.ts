@@ -539,6 +539,10 @@ export async function applyAccountSsoChecks(
     error?: string;
     botFlagSource?: number | string | null;
     isBotFlag1?: boolean;
+    riskLevel?: string | null;
+    riskScore?: number | null;
+    botFlagDetails?: string | null;
+    riskEvent?: string | null;
   }>
 ): Promise<{ updated: number; emailsFilled: number }> {
   const list = Array.isArray(results) ? results : [];
@@ -573,7 +577,11 @@ export async function applyAccountSsoChecks(
       createTime: r.createTime,
       error: r.error,
       botFlagSource: r.botFlagSource,
-      isBotFlag1: r.isBotFlag1
+      isBotFlag1: r.isBotFlag1,
+      riskLevel: r.riskLevel ?? null,
+      riskScore: typeof r.riskScore === 'number' && Number.isFinite(r.riskScore) ? r.riskScore : r.riskScore ?? null,
+      botFlagDetails: r.botFlagDetails ?? null,
+      riskEvent: r.riskEvent ?? null
     };
     updated++;
     // 验活若返回邮箱且号池无邮箱：按 SSO 补 email（便于后续 auth 回填）
