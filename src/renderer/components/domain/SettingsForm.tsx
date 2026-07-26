@@ -1311,20 +1311,20 @@ export function SettingsForm() {
                 <div className="grid gap-3 sm:grid-cols-2">
                   <Field
                     label="授权队列 Worker"
-                    hint="并发 mint/推送数，1～8，默认 2；高并发注册时提高吞吐"
+                    hint="并发 mint/推送数，1～8，默认 1（注册只交 SSO，mint 后台串行更稳）"
                   >
                     <Input
                       type="number"
                       min={1}
                       max={8}
-                      value={draft.authExportWorkers ?? 2}
+                      value={draft.authExportWorkers ?? 1}
                       onChange={(e) => {
                         const n = Number(e.target.value);
                         update(
                           'authExportWorkers',
                           Number.isFinite(n)
                             ? Math.max(1, Math.min(8, Math.floor(n)))
-                            : 2
+                            : 1
                         );
                       }}
                     />

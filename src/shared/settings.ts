@@ -451,7 +451,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoAuthExport: true,
   autoAuthDelayMinSec: 60,
   autoAuthDelayMaxSec: 120,
-  authExportWorkers: 2,
+  authExportWorkers: 1,
   authExportQueueMax: 0,
   cloudflareAuthMode: 'x-admin-auth',
   enableNsfw: false,

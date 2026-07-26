@@ -5781,8 +5781,10 @@ def run_single_registration(
             }
             if q.get("queued"):
                 print(
-                    f"[*] 授权已入队后台 · {q.get('delay_sec')}s 后执行"
-                    f"（SSO推送/Auth转换/Auth推送）· email={email or '-'}",
+                    f"[*] 注册只交 SSO → 授权队列（mint 不在本轮）· "
+                    f"{q.get('delay_sec')}s 后后台执行 "
+                    f"（SSO推送/Auth转换/Auth推送）· email={email or '-'} "
+                    f"pending≈{q.get('pending')}",
                     flush=True,
                 )
             elif q.get("skipped"):
@@ -6377,33 +6379,56 @@ def main():
 
     finally:
         stop_browser()
-        # 后台 SSO→Auth 队列：等待已入队任务完成（含延迟），避免进程退出丢任务
+        # 后台 SSO→Auth 队列：默认短等，避免 mint 拖住「注册结束」；
+        # auth_queue_exit_wait_sec=0 则只汇报 pending、不阻塞退出。
         try:
             from auth_export_queue import queue_stats, wait_queue_idle
 
             st = queue_stats()
-            if st.get("pending", 0) > 0 or st.get("queue_size", 0) > 0:
-                # 最长等 delay_max + mint 余量（默认约 3 分钟量级；可配置更长）
+            pending = int(st.get("pending", 0) or 0)
+            qsize = int(st.get("queue_size", 0) or 0)
+            if pending > 0 or qsize > 0:
+                wait_cap = 45.0
                 try:
-                    from auth_export_queue import load_delay_range
+                    import json as _jq
+                    _cp = os.path.join(os.path.dirname(__file__), "config.json")
+                    if os.path.isfile(_cp):
+                        with open(_cp, "r", encoding="utf-8") as _cf:
+                            _c = _jq.load(_cf) or {}
+                        if "auth_queue_exit_wait_sec" in _c:
+                            wait_cap = float(_c.get("auth_queue_exit_wait_sec"))
+                        elif "authQueueExitWaitSec" in _c:
+                            wait_cap = float(_c.get("authQueueExitWaitSec"))
+                        else:
+                            from auth_export_queue import load_delay_range
 
-                    _lo, _hi = load_delay_range()
-                    wait_cap = float(_hi) + 180.0
+                            _lo, _hi = load_delay_range()
+                            # 短余量：注册交付 SSO 后不再为 mint 长等
+                            wait_cap = min(90.0, float(_hi) + 30.0)
                 except Exception:
-                    wait_cap = 300.0
-                print(
-                    f"[auth-queue] 注册结束，等待后台转换队列"
-                    f"（pending≈{st.get('pending')} · 最长 {wait_cap:.0f}s）…",
-                    flush=True,
-                )
-                ok = wait_queue_idle(timeout=wait_cap)
-                st2 = queue_stats()
-                print(
-                    f"[auth-queue] 队列{'已清空' if ok else '超时仍有剩余'}"
-                    f" · ok={st2.get('done_ok')} fail={st2.get('done_fail')}"
-                    f" pending≈{st2.get('pending')}",
-                    flush=True,
-                )
+                    wait_cap = 45.0
+                wait_cap = max(0.0, min(float(wait_cap), 600.0))
+                if wait_cap <= 0:
+                    print(
+                        f"[auth-queue] 注册结束 · 后台队列仍在跑 "
+                        f"（pending≈{pending} size≈{qsize}）· 不等待 mint",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[auth-queue] 注册结束，短等后台队列 "
+                        f"（pending≈{pending} · 最长 {wait_cap:.0f}s；"
+                        f"mint 已与注册解耦）…",
+                        flush=True,
+                    )
+                    ok = wait_queue_idle(timeout=wait_cap)
+                    st2 = queue_stats()
+                    print(
+                        f"[auth-queue] 队列{'已清空' if ok else '超时仍有剩余'}"
+                        f" · ok={st2.get('done_ok')} fail={st2.get('done_fail')}"
+                        f" pending≈{st2.get('pending')}",
+                        flush=True,
+                    )
         except Exception as qe:
             print(f"[Warn] 等待 auth 队列异常: {qe}", flush=True)
         print(f"")

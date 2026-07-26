@@ -1016,13 +1016,20 @@ def run_hybrid_registration(
             from auth_export_queue import enqueue_authorization as _enq
         except Exception:
             from auth_export_queue import enqueue_sso_to_auth as _enq
-        _enq(
+        q = _enq(
             sso=sso,
             email=email,
             password=password,
             cloudflare_cookies=cf_hint,
             log=log,
         )
+        if isinstance(q, dict) and q.get("queued"):
+            log(
+                f"[hybrid] 注册只交 SSO → 授权队列（mint 不在本轮）· "
+                f"delay={q.get('delay_sec')}s pending≈{q.get('pending')}"
+            )
+        elif isinstance(q, dict) and q.get("skipped"):
+            log(f"[hybrid] 授权未入队（自动转换与 SSO 推送均关）")
     except Exception as qe:
         log(f"[hybrid] auth queue skip: {qe}")
 

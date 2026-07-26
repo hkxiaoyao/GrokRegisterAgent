@@ -246,7 +246,7 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   // 授权队列并发 / 背压（P0）
   {
     const authWorkers = Number(
-      (settings as { authExportWorkers?: number }).authExportWorkers ?? 2
+      (settings as { authExportWorkers?: number }).authExportWorkers ?? 1
     );
     if (Number.isFinite(authWorkers) && authWorkers >= 1) {
       config.auth_export_workers = Math.max(1, Math.min(8, Math.floor(authWorkers)));
