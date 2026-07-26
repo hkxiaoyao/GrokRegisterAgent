@@ -51,6 +51,8 @@ const SSO_FILTER_KEY = 'gra-pool-sso-filter';
 const G2A_FILTER_KEY = 'gra-pool-g2a-filter';
 /** 经 CF 反代时单次 HTTP 需 <~100s；device mint 单号即可接近超时，故每块 1 个 */
 const MINT_CHUNK = 1;
+/** SSO 验活分块：与后端 /api/sso/check 并发 5 对齐，便于进度条步进 */
+const VERIFY_CHUNK = 5;
 
 /** Auth 转换筛选 */
 type AuthFilter = 'all' | 'unconverted' | 'converted';
@@ -135,6 +137,17 @@ type MintProgress = {
   running: boolean;
 };
 
+/** 与补签 Auth 同款进度卡：验活分块推进 */
+type VerifyProgress = {
+  total: number;
+  done: number;
+  alive: number;
+  dead: number;
+  emailsFilled: number;
+  current?: string;
+  running: boolean;
+};
+
 export function PoolPage() {
   const accounts = useAccountsStore((s) => s.accounts);
   const loading = useAccountsStore((s) => s.loading);
@@ -159,6 +172,7 @@ export function PoolPage() {
   const [lastRefresh, setLastRefresh] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [mintProg, setMintProg] = useState<MintProgress | null>(null);
+  const [verifyProg, setVerifyProg] = useState<VerifyProgress | null>(null);
   const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
   /** 补签 Auth 时跳过 bot_flag_source=1（默认关，localStorage 记忆；开=蓝） */
   const [skipBotFlag1, setSkipBotFlag1] = useState(() => {
@@ -649,29 +663,74 @@ export function PoolPage() {
     }
     const missingEmailBefore = targets.filter((a) => !String(a.email || '').trim()).length;
     setVerifying(true);
+    setVerifyProg({
+      total: targets.length,
+      done: 0,
+      alive: 0,
+      dead: 0,
+      emailsFilled: 0,
+      running: true,
+      current: targets[0]?.email || targets[0]?.sso?.slice(0, 12) || ''
+    });
+
+    let alive = 0;
+    let dead = 0;
+    let emailsFilled = 0;
+    const allResults: SsoCheckResult[] = [];
+
     try {
-      const results = await window.api.checkSso(
-        targets.map((a) => ({ id: a.id, sso: a.sso }))
-      );
-      applyResults(results);
+      for (let i = 0; i < targets.length; i += VERIFY_CHUNK) {
+        const chunk = targets.slice(i, i + VERIFY_CHUNK);
+        setVerifyProg((p) =>
+          p
+            ? {
+                ...p,
+                current: chunk[0]?.email || chunk[0]?.sso?.slice(0, 12) || '',
+                running: true
+              }
+            : p
+        );
+        const results = await window.api.checkSso(
+          chunk.map((a) => ({ id: a.id, sso: a.sso }))
+        );
+        allResults.push(...results);
+        applyResults(results);
+        alive += results.filter((r) => r.alive).length;
+        dead += results.filter((r) => !r.alive).length;
+        const chunkFilled =
+          typeof (results as { emailsFilled?: number }).emailsFilled === 'number'
+            ? (results as { emailsFilled?: number }).emailsFilled!
+            : results.filter((r) => {
+                const before = chunk.find((t) => t.id === r.id);
+                return (
+                  before &&
+                  !String(before.email || '').trim() &&
+                  Boolean(String(r.email || '').trim())
+                );
+              }).length;
+        emailsFilled += chunkFilled;
+
+        const done = Math.min(i + chunk.length, targets.length);
+        setVerifyProg({
+          total: targets.length,
+          done,
+          alive,
+          dead,
+          emailsFilled,
+          current:
+            chunk[chunk.length - 1]?.email ||
+            chunk[chunk.length - 1]?.sso?.slice(0, 12) ||
+            '',
+          running: done < targets.length
+        });
+      }
+
       // 服务端已按 SSO 补 email；再拉一次列表保证 UI 与库一致
       try {
         await reload();
       } catch {
         /* applySsoResults 已写内存 */
       }
-      const alive = results.filter((r) => r.alive).length;
-      const emailsFilled =
-        typeof (results as { emailsFilled?: number }).emailsFilled === 'number'
-          ? (results as { emailsFilled?: number }).emailsFilled!
-          : results.filter((r) => {
-              const before = targets.find((t) => t.id === r.id);
-              return (
-                before &&
-                !String(before.email || '').trim() &&
-                Boolean(String(r.email || '').trim())
-              );
-            }).length;
       const emailHint =
         emailsFilled > 0
           ? ` · 补邮箱 ${emailsFilled}` +
@@ -682,14 +741,28 @@ export function PoolPage() {
             ? ' · 无邮箱号未补全（验活未返回 email 或已失效）'
             : '';
       push({
-        tone: 'ok',
+        tone: dead > 0 && alive === 0 ? 'warn' : 'ok',
         title: '验活完成',
-        description: `存活 ${alive} / ${results.length}（已写入账号库 + 本机缓存）${emailHint}`
+        description: `存活 ${alive} / ${allResults.length}（已写入账号库 + 本机缓存）${emailHint}`
       });
     } catch (err) {
       push({ tone: 'danger', title: '批量验活失败', description: String(err) });
     } finally {
       setVerifying(false);
+      setVerifyProg((p) =>
+        p
+          ? {
+              ...p,
+              running: false,
+              done: p.total,
+              alive,
+              dead,
+              emailsFilled
+            }
+          : null
+      );
+      // 进度条保留几秒再收起（与补签 Auth 同款）
+      window.setTimeout(() => setVerifyProg(null), 4000);
     }
   };
 
@@ -946,6 +1019,10 @@ export function PoolPage() {
     mintProg && mintProg.total > 0
       ? Math.min(100, Math.round((mintProg.done / mintProg.total) * 100))
       : 0;
+  const verifyPct =
+    verifyProg && verifyProg.total > 0
+      ? Math.min(100, Math.round((verifyProg.done / verifyProg.total) * 100))
+      : 0;
 
   return (
     <div className="space-y-5">
@@ -965,6 +1042,34 @@ export function PoolPage() {
           />
         </div>
       </section>
+
+      {verifyProg && (
+        <div className="rounded-[16px] border border-primary/30 bg-primary/5 px-4 py-3 shadow-[var(--ios-shadow)]">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-[13px] font-semibold tracking-tight">
+                {verifyProg.running ? '验活进行中' : '验活已完成'}
+              </p>
+              <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
+                {verifyProg.done}/{verifyProg.total}
+                {verifyProg.current ? ` · 当前 ${verifyProg.current}` : ''}
+                {` · 存活 ${verifyProg.alive} · 失效 ${verifyProg.dead}`}
+                {verifyProg.emailsFilled ? ` · 补邮箱 ${verifyProg.emailsFilled}` : ''}
+              </p>
+            </div>
+            <span className="chip tabular-nums">{verifyPct}%</span>
+          </div>
+          <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted">
+            <div
+              className={cn(
+                'h-full rounded-full transition-all duration-300',
+                verifyProg.running ? 'bg-primary' : 'bg-emerald-500'
+              )}
+              style={{ width: `${verifyPct}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {mintProg && (
         <div className="rounded-[16px] border border-primary/30 bg-primary/5 px-4 py-3 shadow-[var(--ios-shadow)]">
