@@ -24,6 +24,45 @@ export interface SsoCheckOutcome {
   botFlagSource?: number | string | null;
   /** bot_flag_source === 1 */
   isBotFlag1?: boolean;
+  /** get-user riskLevel 枚举，如 USER_RISK_LEVEL_HIGH */
+  riskLevel?: string | null;
+  /**
+   * Castle 连续风险分 0.00~1.00（从 botFlagDetails 的 risk= 解析）。
+   * 无则 null（UI 显示 None 风格）。
+   */
+  riskScore?: number | null;
+  /** get-user botFlagDetails 原文（截断） */
+  botFlagDetails?: string | null;
+  /** 从 details 解析的 event，如 $registration / $login */
+  riskEvent?: string | null;
+}
+
+/** 从 botFlagDetails 抽 risk=0.xx / event=$... */
+export function parseCastleRiskDetails(details: unknown): {
+  riskScore: number | null;
+  riskEvent: string | null;
+  botFlagDetails: string | null;
+} {
+  const raw = typeof details === 'string' ? details.trim() : '';
+  if (!raw) {
+    return { riskScore: null, riskEvent: null, botFlagDetails: null };
+  }
+  const clipped = raw.slice(0, 400);
+  let riskScore: number | null = null;
+  const rm = clipped.match(/\brisk\s*[=:]\s*([01](?:\.\d+)?|\.\d+)\b/i);
+  if (rm) {
+    const n = Number(rm[1]);
+    if (Number.isFinite(n) && n >= 0 && n <= 1) {
+      // 展示两位小数语义，内部仍保留数值
+      riskScore = Math.round(n * 100) / 100;
+    }
+  }
+  let riskEvent: string | null = null;
+  const em = clipped.match(/\bevent\s*[=:]\s*(\$?[A-Za-z_][\w.]*)\b/i);
+  if (em) {
+    riskEvent = em[1].startsWith('$') ? em[1] : `$${em[1]}`;
+  }
+  return { riskScore, riskEvent, botFlagDetails: clipped };
 }
 
 export async function checkSso(sso: string, proxy?: string): Promise<SsoCheckOutcome> {
@@ -44,6 +83,30 @@ export async function checkSso(sso: string, proxy?: string): Promise<SsoCheckOut
 
     if (res.status === 200) {
       const u = res.data as Record<string, unknown>;
+      const riskLevel =
+        u.riskLevel != null && String(u.riskLevel).trim()
+          ? String(u.riskLevel).trim()
+          : null;
+      const parsed = parseCastleRiskDetails(
+        u.botFlagDetails ?? u.bot_flag_details ?? u.botFlagDetail
+      );
+      // 部分响应可能把数值 risk 放在顶层
+      let riskScore = parsed.riskScore;
+      if (riskScore == null) {
+        const top =
+          u.risk ??
+          u.riskScore ??
+          u.userRisk ??
+          (u as { castleRisk?: unknown }).castleRisk;
+        if (typeof top === 'number' && Number.isFinite(top) && top >= 0 && top <= 1) {
+          riskScore = Math.round(top * 100) / 100;
+        } else if (typeof top === 'string' && /^\d*\.?\d+$/.test(top.trim())) {
+          const n = Number(top.trim());
+          if (Number.isFinite(n) && n >= 0 && n <= 1) {
+            riskScore = Math.round(n * 100) / 100;
+          }
+        }
+      }
       return {
         alive: true,
         status: 200,
@@ -54,7 +117,11 @@ export async function checkSso(sso: string, proxy?: string): Promise<SsoCheckOut
         sessionTierId: u.sessionTierId != null ? String(u.sessionTierId) : undefined,
         createTime: typeof u.createTime === 'string' ? u.createTime : undefined,
         botFlagSource: flag.botFlagSource,
-        isBotFlag1: flag.isBotFlag1
+        isBotFlag1: flag.isBotFlag1,
+        riskLevel,
+        riskScore,
+        botFlagDetails: parsed.botFlagDetails,
+        riskEvent: parsed.riskEvent
       };
     }
 
@@ -63,7 +130,11 @@ export async function checkSso(sso: string, proxy?: string): Promise<SsoCheckOut
         alive: false,
         status: res.status,
         botFlagSource: flag.botFlagSource,
-        isBotFlag1: flag.isBotFlag1
+        isBotFlag1: flag.isBotFlag1,
+        riskScore: null,
+        riskLevel: null,
+        riskEvent: null,
+        botFlagDetails: null
       };
     }
 
@@ -72,7 +143,11 @@ export async function checkSso(sso: string, proxy?: string): Promise<SsoCheckOut
       status: res.status,
       error: `grok 返回 HTTP ${res.status}`,
       botFlagSource: flag.botFlagSource,
-      isBotFlag1: flag.isBotFlag1
+      isBotFlag1: flag.isBotFlag1,
+      riskScore: null,
+      riskLevel: null,
+      riskEvent: null,
+      botFlagDetails: null
     };
   } catch (e) {
     return {
@@ -80,7 +155,11 @@ export async function checkSso(sso: string, proxy?: string): Promise<SsoCheckOut
       status: 0,
       error: e instanceof Error ? e.message : String(e),
       botFlagSource: flag.botFlagSource,
-      isBotFlag1: flag.isBotFlag1
+      isBotFlag1: flag.isBotFlag1,
+      riskScore: null,
+      riskLevel: null,
+      riskEvent: null,
+      botFlagDetails: null
     };
   }
 }

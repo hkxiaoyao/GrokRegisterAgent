@@ -92,6 +92,17 @@ export interface SsoCheckResult {
   /** JWT claim bot_flag_source（解码 SSO） */
   botFlagSource?: number | string | null;
   isBotFlag1?: boolean;
+  /** get-user riskLevel 枚举 */
+  riskLevel?: string | null;
+  /**
+   * Castle 风险系数 0.00~1.00（get-user botFlagDetails 的 risk=）。
+   * 无则 null，详情卡显示 None 风格。
+   */
+  riskScore?: number | null;
+  /** botFlagDetails 原文（截断） */
+  botFlagDetails?: string | null;
+  /** event=$registration / $login 等 */
+  riskEvent?: string | null;
 }
 
 /** CPA auth 文件列表项 */

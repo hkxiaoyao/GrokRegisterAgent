@@ -791,6 +791,10 @@ app.post('/api/sso/check', async (req: Request, res: Response) => {
     error?: string;
     botFlagSource?: number | string | null;
     isBotFlag1?: boolean;
+    riskLevel?: string | null;
+    riskScore?: number | null;
+    botFlagDetails?: string | null;
+    riskEvent?: string | null;
   }> = [];
   for (let i = 0; i < items.length; i += CONCURRENCY) {
     const batch = items.slice(i, i + CONCURRENCY) as { id: string; sso: string }[];

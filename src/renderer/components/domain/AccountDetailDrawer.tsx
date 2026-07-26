@@ -328,6 +328,15 @@ export function AccountDetailDrawer({
                       ssoResult.createTime ? fmtBeijing(ssoResult.createTime) : undefined
                     }
                   />
+                  <div className="flex items-start justify-between gap-3">
+                    <span className="shrink-0 text-muted-foreground">风险系数</span>
+                    <RiskScoreValue
+                      score={ssoResult.riskScore}
+                      riskLevel={ssoResult.riskLevel}
+                      riskEvent={ssoResult.riskEvent}
+                      details={ssoResult.botFlagDetails}
+                    />
+                  </div>
                 </div>
               )}
               {ssoResult.error && (
@@ -426,5 +435,57 @@ function KV({
         {value || '—'}
       </span>
     </div>
+  );
+}
+
+/** 风险系数：有值显示 0.xx；无值用与列表 None 同风格的 muted pill */
+function RiskScoreValue({
+  score,
+  riskLevel,
+  riskEvent,
+  details
+}: {
+  score?: number | null;
+  riskLevel?: string | null;
+  riskEvent?: string | null;
+  details?: string | null;
+}) {
+  const has =
+    typeof score === 'number' && Number.isFinite(score) && score >= 0 && score <= 1;
+  const titleParts = [
+    has ? `risk=${score!.toFixed(2)}` : '无 risk 分',
+    riskLevel ? `level=${riskLevel}` : '',
+    riskEvent ? `event=${riskEvent}` : '',
+    details ? details.slice(0, 160) : ''
+  ].filter(Boolean);
+  const title = titleParts.join(' · ');
+
+  if (!has) {
+    return (
+      <span
+        className="inline-flex h-5 shrink-0 items-center rounded-full bg-muted px-2 text-[10px] font-medium leading-none text-muted-foreground"
+        title={title || '尚未解析到 Castle risk=0.xx'}
+      >
+        None
+      </span>
+    );
+  }
+
+  const high = score! >= 0.9;
+  const mid = score! >= 0.5;
+  return (
+    <span
+      className={cn(
+        'inline-flex h-5 shrink-0 items-center rounded-full px-2 font-mono text-[10px] font-medium leading-none tabular-nums',
+        high
+          ? 'bg-destructive/15 text-destructive'
+          : mid
+            ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+            : 'bg-muted px-2 text-muted-foreground'
+      )}
+      title={title}
+    >
+      {score!.toFixed(2)}
+    </span>
   );
 }
