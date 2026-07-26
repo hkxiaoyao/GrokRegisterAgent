@@ -853,8 +853,18 @@ def _run_mint_and_auth_push(
                 "policy=deny",
                 "user_risk_level_high",
                 "skipped_bot_flag",
+                "no browser fallback",
+                "mint light",
             )
         )
+        # mint 结果显式标记风控 light / gate
+        if (r or {}).get("risk_light") or (r or {}).get("skipped_bot_flag"):
+            bot_blocked = True
+        og = (r or {}).get("oauth_gate") or {}
+        if og.get("botFlagSource") or (
+            "HIGH" in str(og.get("riskLevel") or "").upper()
+        ):
+            bot_blocked = True
         skip_bot_cfg = True
         try:
             from auth_service import _skip_bot_flag_on_mint_enabled
@@ -862,10 +872,17 @@ def _run_mint_and_auth_push(
             skip_bot_cfg = bool(_skip_bot_flag_on_mint_enabled())
         except Exception:
             skip_bot_cfg = True
+        # 风控 light 或 skip-bot：禁止密码 browser 长轮询（否则 poll timeout 再烧 1～2 分钟）
+        risk_light_r = bool((r or {}).get("risk_light"))
         allow_browser_fallback = password and "require_grok_45" not in str(err)
-        if bot_blocked and skip_bot_cfg:
+        if bot_blocked and (skip_bot_cfg or risk_light_r):
+            why = (
+                "risk_light=true"
+                if risk_light_r
+                else "skip_bot_flag_on_mint=true"
+            )
             log(
-                f"[auth-queue] 跳过 browser Device mint（bot/风控；skip_bot_flag_on_mint=true）"
+                f"[auth-queue] 跳过 browser Device mint（bot/风控；{why}）"
                 f" email={email or '-'} err={str(err)[:160]}"
             )
             allow_browser_fallback = False

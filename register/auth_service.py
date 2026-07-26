@@ -262,6 +262,7 @@ def _via_pkce_token(
     proxy: str = "",
     log: LogFn | None = None,
     allow_device_fallback: bool | None = None,
+    allow_browser_fallback: bool = True,
     cloudflare_cookies: str = "",
 ) -> dict[str, Any] | None:
     """PKCE main path; optionally device then short browser Allow.
@@ -270,7 +271,7 @@ def _via_pkce_token(
       1) CreateCookieSetterLink PKCE (cpa_pkce_mint, chrome131)
       2) legacy sso_to_token PKCE
       3) device fallback (config cpa_allow_device_flow_fallback, default off)
-      4) browser consent Allow
+      4) browser consent Allow（allow_browser_fallback=False 时跳过，风控 light 用）
 
     allow_device_fallback=False for double-mode *pkce channel* so a device grant
     is never written as xai-*-pkce.json (Auth B / *-device.json would be missing
@@ -373,6 +374,9 @@ def _via_pkce_token(
         )
 
     # 3) browser Allow: short timeout so mint-queue cannot hang forever
+    if not allow_browser_fallback:
+        log("[auth] PKCE skip browser consent（allow_browser_fallback=false）")
+        return None
     try:
         from sso_to_auth import sso_to_token_via_browser_consent
 
@@ -1199,6 +1203,7 @@ def sso_to_cpa_auth(
                             proxy=proxy or "",
                             log=log,
                             allow_device_fallback=False,
+                            allow_browser_fallback=not risk_light,
                             cloudflare_cookies=cloudflare_cookies or "",
                         )
                     else:
@@ -1207,6 +1212,7 @@ def sso_to_cpa_auth(
                             proxy=proxy or "",
                             log=log,
                             attempts=1,
+                            allow_browser_fallback=not risk_light,
                         )
                 except Exception as e:
                     mint_err = str(e)
@@ -1268,14 +1274,31 @@ def sso_to_cpa_auth(
         )
         log(f"[auth] {summary}")
         if not ok_chs:
-            return {
+            # 风控 light：错误串带 bot/high-risk，避免 auth-queue 再走密码 browser 长轮询
+            err_msg = "double mint: both channels failed"
+            if risk_light:
+                err_msg = (
+                    "sso bot/high-risk blocked for OAuth; "
+                    "double mint light 1+1 failed (no browser fallback)"
+                )
+            out: dict[str, Any] = {
                 "ok": False,
-                "error": "double mint: both channels failed",
+                "error": err_msg,
                 "email": email,
                 "mint_mode": "double",
                 "channels": channels_out,
                 "note": "two independent OAuth grants; one does not invalidate the other",
             }
+            if risk_light:
+                out["risk_light"] = True
+                out["skipped_bot_flag"] = False
+                out["oauth_gate"] = {
+                    "riskLevel": gate.get("riskLevel"),
+                    "botFlagSource": gate.get("botFlagSource"),
+                    "botFlagDetails": gate.get("botFlagDetails"),
+                    "userId": gate.get("userId"),
+                }
+            return out
         return {
             "ok": True,
             "email": (primary or {}).get("email") or email,
@@ -1300,21 +1323,59 @@ def sso_to_cpa_auth(
     # ---------- 单通道 pkce | device ----------
     log(
         f"[auth] SSO→CPA mint mode={resolved_mode} email={email or '-'} dir={out_dir}"
+        + (" · risk_light no-browser" if risk_light else "")
     )
-    token, used_mode = _mint_tokens(
-        sso,
-        proxy=proxy or "",
-        mint_mode=resolved_mode,
-        cloudflare_cookies=cloudflare_cookies or "",
-        log=log,
-    )
+    if risk_light:
+        # 风控 light：单通道也只协议一次，禁止 browser consent 长等
+        if resolved_mode == "device":
+            token = _via_device_token(
+                sso,
+                proxy=proxy or "",
+                log=log,
+                attempts=1,
+                allow_browser_fallback=False,
+            )
+            used_mode = "device"
+        else:
+            token = _via_pkce_token(
+                sso,
+                proxy=proxy or "",
+                log=log,
+                allow_device_fallback=False,
+                allow_browser_fallback=False,
+                cloudflare_cookies=cloudflare_cookies or "",
+            )
+            used_mode = "pkce"
+    else:
+        token, used_mode = _mint_tokens(
+            sso,
+            proxy=proxy or "",
+            mint_mode=resolved_mode,
+            cloudflare_cookies=cloudflare_cookies or "",
+            log=log,
+        )
     if not token or not token.get("access_token"):
-        return {
+        err = f"mint failed (mode={used_mode})"
+        if risk_light:
+            err = (
+                f"sso bot/high-risk blocked for OAuth; "
+                f"mint light failed mode={used_mode} (no browser fallback)"
+            )
+        out_fail: dict[str, Any] = {
             "ok": False,
-            "error": f"mint failed (mode={used_mode})",
+            "error": err,
             "email": email,
             "mint_mode": used_mode,
         }
+        if risk_light:
+            out_fail["risk_light"] = True
+            out_fail["oauth_gate"] = {
+                "riskLevel": gate.get("riskLevel"),
+                "botFlagSource": gate.get("botFlagSource"),
+                "botFlagDetails": gate.get("botFlagDetails"),
+                "userId": gate.get("userId"),
+            }
+        return out_fail
 
     one = _write_and_probe_one(
         token=token,
