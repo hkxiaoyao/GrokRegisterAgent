@@ -1218,7 +1218,7 @@ export function SettingsForm() {
             } else {
               bits.push('Auth 关');
             }
-            if (draft.skipBotFlag1OnMint !== false) bits.push('跳过Bot');
+            if (draft.skipBotFlag1OnMint !== false) bits.push('跳过Bot/风控');
             else bits.push('Bot仍mint');
             if (draft.autoResignOn401 === true) bits.push('401重签');
             if (draft.resignPushRemote === true) bits.push('重签后推');
@@ -1263,8 +1263,8 @@ export function SettingsForm() {
               onChange={(v) => update('autoAuthExport', v)}
             />
             <ToggleRow
-              label="Bot 号跳过 Mint"
-              hint="开=get-user 含 Castle bot/高风险时不 mint（省时间）；关=仍尝试 mint，策略松动能补签旧号。写入 skip_bot_flag_on_mint"
+              label="Bot/风控号跳过 Mint"
+              hint="开=get-user 判定 bot 或高风险时跳过 mint（省时间，推荐）；关=风控号仍尝试 mint（可补签旧号，但易 Access denied 白烧）。写入 skip_bot_flag_on_mint"
               checked={draft.skipBotFlag1OnMint !== false}
               onChange={(v) => update('skipBotFlag1OnMint', v)}
             />
