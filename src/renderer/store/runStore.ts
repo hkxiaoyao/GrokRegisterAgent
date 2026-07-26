@@ -11,6 +11,38 @@ export interface LogLine {
   runId: string;
 }
 
+export type LogChannel = 'register' | 'auth';
+
+/**
+ * 授权流水线日志判定（与 LogPanel 保持一致；store 清空按 channel 用）。
+ * 避免在 store 反向 import UI 组件。
+ */
+export function isAuthPipelineLogText(text: string): boolean {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (/^\[auth-queue\]/i.test(t)) return true;
+  if (/^\[mint-queue\]/i.test(t)) return true;
+  if (/^\[auth\]/i.test(t)) return true;
+  if (/^\[browser-mint\]/i.test(t)) return true;
+  if (/^\[device-mint\]/i.test(t)) return true;
+  if (/^\[oauth\]/i.test(t)) return true;
+  if (/授权已入队后台/i.test(t)) return true;
+  if (/等待后台转换队列/i.test(t)) return true;
+  if (/SSO\s*[→\-]\s*grok2api/i.test(t)) return true;
+  if (/Auth\s*mint/i.test(t)) return true;
+  if (/Auth\s*[→\-]\s*CPA/i.test(t)) return true;
+  if (/mint\s*池/i.test(t)) return true;
+  if (/流水线部分失败|流水线完成/i.test(t)) return true;
+  if (/skip_bot_flag_on_mint/i.test(t)) return true;
+  if (/BOT_FLAG_SOURCE/i.test(t)) return true;
+  return false;
+}
+
+function matchLogChannel(text: string, channel: LogChannel): boolean {
+  const isAuth = isAuthPipelineLogText(text);
+  return channel === 'auth' ? isAuth : !isAuth;
+}
+
 interface RunState {
   status: RunStatus;
   logs: LogLine[];
@@ -25,6 +57,10 @@ interface RunState {
   clearLogs(): void;
   /** 仅清空某任务日志 */
   clearLogsFor(runId: string): void;
+  /** 按通道清空（register / auth） */
+  clearLogsChannel(channel: LogChannel): void;
+  /** 按任务 + 通道清空 */
+  clearLogsChannelFor(runId: string, channel: LogChannel): void;
 }
 
 let seq = 0;
@@ -120,6 +156,18 @@ export const useRunStore = create<RunState>((set) => ({
 
   clearLogsFor: (runId) =>
     set((s) => ({ logs: s.logs.filter((l) => l.runId !== runId) })),
+
+  clearLogsChannel: (channel) =>
+    set((s) => ({
+      logs: s.logs.filter((l) => !matchLogChannel(l.text, channel))
+    })),
+
+  clearLogsChannelFor: (runId, channel) =>
+    set((s) => ({
+      logs: s.logs.filter(
+        (l) => !(l.runId === runId && matchLogChannel(l.text, channel))
+      )
+    })),
 
   applyEvent: (event) => {
     set((state) => {

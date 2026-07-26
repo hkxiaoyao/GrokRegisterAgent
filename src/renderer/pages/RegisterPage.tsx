@@ -12,7 +12,10 @@ import { Button } from '@renderer/components/ui/Button';
 import { LiveProgressBar, liveProgressPercent } from '@renderer/components/ui/LiveProgressBar';
 import { Slider } from '@renderer/components/ui/Slider';
 import { StatusCard } from '@renderer/components/domain/StatusCard';
-import { LogPanel } from '@renderer/components/domain/LogPanel';
+import {
+  AuthLogPanel,
+  RegisterLogPanel
+} from '@renderer/components/domain/LogPanel';
 import { JobListPanel } from '@renderer/components/domain/JobListPanel';
 import { useRunStore } from '@renderer/store/runStore';
 import { useSettingsStore } from '@renderer/store/settingsStore';
@@ -219,7 +222,6 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
 
             {/* 原「运行设置」合并进实时状态 */}
             <RuntimeSettingsInline />
-            <AuthQueueMetricsCard />
 
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               <InfoBox label="轮数" value={String(settings?.runCount ?? '--')} />
@@ -241,7 +243,10 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
         </div>
       </div>
 
-      <LogPanel />
+      <div className="flex flex-col gap-3">
+        <RegisterLogPanel />
+        <AuthLogPanel />
+      </div>
     </div>
   );
 }
@@ -483,95 +488,6 @@ function InfoBox({ label, value }: { label: string; value: string }) {
     <div className="rounded-xl border border-border/60 bg-card/70 p-3.5">
       <div className="field-label">{label}</div>
       <div className="mt-1.5 break-all text-[13px] font-medium">{value}</div>
-    </div>
-  );
-}
-
-/** 授权队列 metrics（pending / workers / done） */
-function AuthQueueMetricsCard() {
-  const [m, setM] = useState<{
-    pending?: number;
-    queue_size?: number;
-    done_ok?: number;
-    done_fail?: number;
-    workers?: number;
-    queue_max?: number;
-    updated_iso?: string;
-    stale?: boolean;
-  } | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const api = window.api as {
-          getAuthQueueMetrics?: () => Promise<Record<string, unknown>>;
-        };
-        if (!api.getAuthQueueMetrics) return;
-        const r = await api.getAuthQueueMetrics();
-        if (!cancelled && r) setM(r as typeof m);
-      } catch {
-        /* ignore */
-      }
-    };
-    void tick();
-    const id = window.setInterval(() => void tick(), 4000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(id);
-    };
-  }, []);
-
-  const pending = m?.pending ?? m?.queue_size ?? 0;
-  const workers = m?.workers ?? 0;
-  const ok = m?.done_ok ?? 0;
-  const fail = m?.done_fail ?? 0;
-  const qmax = m?.queue_max ?? 0;
-
-  return (
-    <div className="rounded-xl border border-border bg-card/80 p-3.5 shadow-[var(--ios-shadow)]">
-      <div className="flex items-center justify-between gap-2">
-        <div className="text-[13px] font-semibold tracking-[-0.02em]">
-          授权队列
-        </div>
-        <span className="text-[10px] text-muted-foreground">
-          {m?.stale
-            ? '暂无运行中数据'
-            : m?.updated_iso
-              ? `更新 ${String(m.updated_iso).slice(11, 19)}`
-              : '—'}
-        </span>
-      </div>
-      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
-        <div className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2">
-          <div className="text-[10px] text-muted-foreground">排队</div>
-          <div className="text-[15px] font-semibold tabular-nums">{pending}</div>
-        </div>
-        <div className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2">
-          <div className="text-[10px] text-muted-foreground">Workers</div>
-          <div className="text-[15px] font-semibold tabular-nums">
-            {workers}
-            {qmax ? (
-              <span className="text-[11px] font-normal text-muted-foreground">
-                {' '}
-                / max{qmax}
-              </span>
-            ) : null}
-          </div>
-        </div>
-        <div className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2">
-          <div className="text-[10px] text-muted-foreground">成功</div>
-          <div className="text-[15px] font-semibold tabular-nums text-emerald-600">
-            {ok}
-          </div>
-        </div>
-        <div className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2">
-          <div className="text-[10px] text-muted-foreground">失败</div>
-          <div className="text-[15px] font-semibold tabular-nums text-amber-600">
-            {fail}
-          </div>
-        </div>
-      </div>
     </div>
   );
 }
