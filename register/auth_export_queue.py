@@ -42,6 +42,10 @@ _done_fail = 0
 _worker_count = 0
 _queue_max = 0
 _enqueue_block_sec = 120.0
+# 流水线/ mint 失败原因计数（日志可读 + metrics）
+# 常见 key: mint_queue_full / mint_denied_castle / mint_skipped_bot /
+#           mint_oauth_fail / mint_fail / sso_g2_fail / empty_sso / worker_error
+_fail_by_status: dict[str, int] = {}
 
 
 def _noop(_: str) -> None:
@@ -54,6 +58,72 @@ def _log(msg: str, log: LogFn | None = None) -> None:
         fn(msg)
     except Exception:
         print(msg, flush=True)
+
+
+def classify_mint_status(
+    result: dict[str, Any] | None = None,
+    *,
+    error: str = "",
+    backpressure: bool = False,
+) -> str:
+    """把 mint/流水线失败压成稳定 status，避免全叫「部分失败」。
+
+    返回值（稳定字符串，供日志与计数）:
+      ok | mint_queue_full | mint_skipped_bot | mint_denied_castle |
+      mint_oauth_fail | mint_fail | sso_g2_fail | empty_sso | worker_error | unknown
+    """
+    if backpressure:
+        return "mint_queue_full"
+    if result and result.get("ok"):
+        return "ok"
+    if result and result.get("skipped_bot_flag"):
+        return "mint_skipped_bot"
+
+    err = str((result or {}).get("error") or error or "").strip()
+    err_l = err.lower()
+    if not err_l:
+        return "unknown"
+
+    # Castle / bot 风控（含 skip 与 deny 文案）
+    castle_keys = (
+        "bot/high-risk",
+        "bot_flag",
+        "botflagsource",
+        "bot_flag_source",
+        "castle",
+        "policy=deny",
+        "user_risk_level_high",
+        "skipped_bot_flag",
+        "sso blocked for oauth",
+    )
+    if any(k in err_l for k in castle_keys):
+        return "mint_denied_castle"
+
+    # OAuth 协议拒绝
+    oauth_keys = (
+        "invalid_grant",
+        "access_denied",
+        "consent_required",
+        "login_required",
+        "unauthorized_client",
+        "interaction_required",
+    )
+    if any(k in err_l for k in oauth_keys):
+        return "mint_oauth_fail"
+
+    if "empty sso" in err_l or err_l == "empty_sso":
+        return "empty_sso"
+    if "queue full" in err_l or "backpressure" in err_l:
+        return "mint_queue_full"
+    if "sso" in err_l and ("grok2api" in err_l or "g2" in err_l or "push" in err_l):
+        return "sso_g2_fail"
+    return "mint_fail"
+
+
+def _bump_fail_status(status: str) -> None:
+    key = (status or "unknown").strip() or "unknown"
+    with _lock:
+        _fail_by_status[key] = int(_fail_by_status.get(key) or 0) + 1
 
 
 def _load_conf() -> dict[str, Any]:
@@ -186,20 +256,23 @@ def load_push_flags() -> dict[str, bool]:
     }
 
 
-def queue_stats() -> dict[str, int]:
+def queue_stats() -> dict[str, Any]:
     qsize = 0
     try:
         if _q is not None:
             qsize = _q.qsize()
     except Exception:
         qsize = 0
-    stats = {
+    with _lock:
+        fail_by = dict(_fail_by_status)
+    stats: dict[str, Any] = {
         "pending": max(0, _pending),
         "queue_size": qsize,
         "done_ok": _done_ok,
         "done_fail": _done_fail,
         "workers": _worker_count,
         "queue_max": _queue_max,
+        "fail_by_status": fail_by,
     }
     try:
         from auth_queue_metrics import write_metrics
@@ -798,9 +871,14 @@ def _run_mint_and_auth_push(
                 pass
             except Exception as be:
                 log(f"[auth-queue] browser Device mint 失败: {be}")
+        out = r or {"ok": False, "error": "mint failed"}
+        if not isinstance(out, dict):
+            out = {"ok": False, "error": str(out)}
+        status = classify_mint_status(out)
+        out.setdefault("status", status)
         log(
             f"[auth-queue] ✘ Auth mint 失败 email={email or '-'} "
-            f"err={(r or {}).get('error') or 'unknown'}"
+            f"status={status} err={out.get('error') or 'unknown'}"
         )
         if cpa_job_id:
             try:
@@ -808,15 +886,19 @@ def _run_mint_and_auth_push(
 
                 mark_failed(
                     cpa_job_id,
-                    str((r or {}).get("error") or "mint failed")[:300],
+                    str(out.get("error") or "mint failed")[:300],
                     retry_after_sec=120,
                 )
             except Exception:
                 pass
-        return r or {"ok": False, "error": "mint failed"}
+        return out
     except Exception as e:
-        log(f"[auth-queue] ✘ Auth mint 异常 email={email or '-'}: {e}")
-        return {"ok": False, "error": str(e)}
+        status = "worker_error"
+        log(
+            f"[auth-queue] ✘ Auth mint 异常 email={email or '-'} "
+            f"status={status}: {e}"
+        )
+        return {"ok": False, "error": str(e), "status": status}
 
 
 def _process_job(job: dict[str, Any]) -> None:
@@ -834,6 +916,7 @@ def _process_job(job: dict[str, Any]) -> None:
     do_auth = bool(flags.get("auto_auth"))
     do_cpa = bool(flags.get("auth_cpa"))
     wid = threading.current_thread().name
+    fail_statuses: list[str] = []
 
     run_at = float(job.get("run_at") or 0)
     if run_at > 0:
@@ -854,8 +937,11 @@ def _process_job(job: dict[str, Any]) -> None:
             time.sleep(min(5.0, max(0.1, end - time.time())))
 
     if not sso:
-        _log(f"[auth-queue][{wid}] ✘ 跳过空 SSO email={email or '-'}")
+        _log(
+            f"[auth-queue][{wid}] ✘ 跳过空 SSO email={email or '-'} status=empty_sso"
+        )
         _done_fail += 1
+        _bump_fail_status("empty_sso")
         return
 
     if not (do_sso_g2 or do_auth):
@@ -881,6 +967,7 @@ def _process_job(job: dict[str, Any]) -> None:
         )
         if g2.get("attempted") and not g2.get("ok") and not g2.get("skipped"):
             step_ok = False
+            fail_statuses.append("sso_g2_fail")
     # 2) mint + 3) Auth→CPA
     # U1：若配置了独立 mint 池 (cpa_mint_workers>0)，转交 mint_queue，不阻塞本 worker
     if do_auth:
@@ -909,7 +996,12 @@ def _process_job(job: dict[str, Any]) -> None:
                     handed = False
                 elif mq.get("backpressure"):
                     step_ok = False
-                    _log(f"[auth-queue][{wid}] mint 池背压，本任务 mint 未入队")
+                    status = classify_mint_status(backpressure=True)
+                    fail_statuses.append(status)
+                    _log(
+                        f"[auth-queue][{wid}] mint 池背压，本任务 mint 未入队 "
+                        f"status={status} email={email or '-'}"
+                    )
                     handed = True  # 不再内联，避免双倍占坑
         except Exception as me:
             _log(f"[auth-queue][{wid}] mint 池转交失败，回退内联: {me}")
@@ -927,6 +1019,11 @@ def _process_job(job: dict[str, Any]) -> None:
             )
             if not mint_r.get("ok"):
                 step_ok = False
+                status = str(
+                    mint_r.get("status")
+                    or classify_mint_status(mint_r)
+                )
+                fail_statuses.append(status)
     elif do_cpa:
         _log(
             f"[auth-queue][{wid}] ⚠ 已开 Auth→CPA 但未开自动转换 Auth，无法推送（先 mint）"
@@ -937,7 +1034,19 @@ def _process_job(job: dict[str, Any]) -> None:
         _log(f"[auth-queue][{wid}] ✔ 流水线完成 email={email or '-'}")
     else:
         _done_fail += 1
-        _log(f"[auth-queue][{wid}] ✘ 流水线部分失败 email={email or '-'}")
+        # 去重保序：同一 job 可能 sso_g2 + mint 双失败
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for s in fail_statuses:
+            if s and s not in seen:
+                seen.add(s)
+                ordered.append(s)
+                _bump_fail_status(s)
+        status_label = "+".join(ordered) if ordered else "unknown"
+        _log(
+            f"[auth-queue][{wid}] ✘ 流水线部分失败 email={email or '-'} "
+            f"status={status_label}"
+        )
 
 
 def _worker_loop() -> None:
@@ -952,7 +1061,8 @@ def _worker_loop() -> None:
         except Exception as e:
             global _done_fail
             _done_fail += 1
-            _log(f"[auth-queue] worker 异常: {e}")
+            _bump_fail_status("worker_error")
+            _log(f"[auth-queue] worker 异常 status=worker_error: {e}")
         finally:
             with _lock:
                 _pending = max(0, _pending - 1)

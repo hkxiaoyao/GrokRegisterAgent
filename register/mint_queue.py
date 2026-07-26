@@ -34,6 +34,8 @@ _done_ok = 0
 _done_fail = 0
 _worker_count = 0
 _queue_max = 0
+# mint 失败原因计数（与 auth_export_queue.classify_mint_status 对齐）
+_fail_by_status: dict[str, int] = {}
 
 
 def _log(msg: str, log: LogFn | None = None) -> None:
@@ -42,6 +44,12 @@ def _log(msg: str, log: LogFn | None = None) -> None:
         fn(msg)
     except Exception:
         print(msg, flush=True)
+
+
+def _bump_fail_status(status: str) -> None:
+    key = (status or "unknown").strip() or "unknown"
+    with _lock:
+        _fail_by_status[key] = int(_fail_by_status.get(key) or 0) + 1
 
 
 def _load_conf() -> dict[str, Any]:
@@ -96,6 +104,8 @@ def use_separate_mint_pool() -> bool:
 
 
 def queue_stats() -> dict[str, Any]:
+    with _lock:
+        fail_by = dict(_fail_by_status)
     return {
         "pending": _pending,
         "queue_size": _q.qsize() if _q else 0,
@@ -104,12 +114,14 @@ def queue_stats() -> dict[str, Any]:
         "workers": _worker_count,
         "queue_max": _queue_max,
         "separate_pool": use_separate_mint_pool(),
+        "fail_by_status": fail_by,
     }
 
 
 def _process_mint_job(job: dict[str, Any]) -> None:
     global _done_ok, _done_fail
-    from auth_export_queue import _run_mint_and_auth_push  # 复用 mint+推送逻辑
+    # 复用 mint+推送逻辑与 status 分类
+    from auth_export_queue import _run_mint_and_auth_push, classify_mint_status
 
     email = str(job.get("email") or "")
     wid = threading.current_thread().name
@@ -130,13 +142,19 @@ def _process_mint_job(job: dict[str, Any]) -> None:
             _log(f"[mint-queue][{wid}] ✔ mint OK email={email or '-'}")
         else:
             _done_fail += 1
+            status = str(
+                (r or {}).get("status")
+                or classify_mint_status(r if isinstance(r, dict) else None)
+            )
+            _bump_fail_status(status)
             _log(
                 f"[mint-queue][{wid}] ✘ mint fail email={email or '-'} "
-                f"err={(r or {}).get('error') or 'unknown'}"
+                f"status={status} err={(r or {}).get('error') or 'unknown'}"
             )
     except Exception as e:
         _done_fail += 1
-        _log(f"[mint-queue][{wid}] ✘ 异常: {e}")
+        _bump_fail_status("worker_error")
+        _log(f"[mint-queue][{wid}] ✘ 异常 status=worker_error: {e}")
 
 
 def _worker_loop() -> None:
@@ -218,8 +236,17 @@ def enqueue_mint(
     try:
         _q.put(job, timeout=max(1.0, float(block_sec)))
     except queue.Full:
-        _log(f"[mint-queue] 背压：队列已满 email={email or '-'}", log)
-        return {"queued": False, "error": "mint queue full", "backpressure": True}
+        _bump_fail_status("mint_queue_full")
+        _log(
+            f"[mint-queue] 背压：队列已满 status=mint_queue_full email={email or '-'}",
+            log,
+        )
+        return {
+            "queued": False,
+            "error": "mint queue full",
+            "backpressure": True,
+            "status": "mint_queue_full",
+        }
 
     with _lock:
         _pending += 1

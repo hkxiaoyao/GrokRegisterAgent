@@ -49,5 +49,6 @@ def read_metrics() -> dict[str, Any]:
         "done_fail": 0,
         "workers": 0,
         "queue_max": 0,
+        "fail_by_status": {},
         "updated_at": 0,
     }
