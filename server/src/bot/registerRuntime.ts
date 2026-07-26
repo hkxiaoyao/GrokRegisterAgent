@@ -255,7 +255,7 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
       (settings as { authExportQueueMax?: number }).authExportQueueMax ?? 0
     );
     if (Number.isFinite(authQMax) && authQMax > 0) {
-      config.auth_export_queue_max = Math.max(1, Math.min(64, Math.floor(authQMax)));
+      config.auth_export_queue_max = Math.max(1, Math.min(999, Math.floor(authQMax)));
     }
   }
   // CF 邮箱鉴权模式

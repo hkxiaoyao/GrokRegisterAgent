@@ -1342,19 +1342,19 @@ export function SettingsForm() {
                   </Field>
                   <Field
                     label="队列上限"
-                    hint="0=2×Worker；满则入队等待，防堆积崩"
+                    hint="0=2×Worker；最大 999；满则入队等待，防堆积崩"
                   >
                     <Input
                       type="number"
                       min={0}
-                      max={64}
+                      max={999}
                       value={draft.authExportQueueMax ?? 0}
                       onChange={(e) => {
                         const n = Number(e.target.value);
                         update(
                           'authExportQueueMax',
                           Number.isFinite(n)
-                            ? Math.max(0, Math.min(64, Math.floor(n)))
+                            ? Math.max(0, Math.min(999, Math.floor(n)))
                             : 0
                         );
                       }}

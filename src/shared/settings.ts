@@ -239,7 +239,7 @@ export interface AppSettings {
   /** 授权队列 worker 数（1～8，默认 2） */
   authExportWorkers: number;
   /**
-   * 授权队列上限；0=2×workers。满则入队阻塞/背压。
+   * 授权队列上限；0=2×workers；硬上限 999。满则入队阻塞/背压。
    */
   authExportQueueMax: number;
   /**

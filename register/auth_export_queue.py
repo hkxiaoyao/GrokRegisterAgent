@@ -222,7 +222,7 @@ def load_worker_settings() -> tuple[int, int, float]:
         qmax = 0
     if qmax <= 0:
         qmax = max(4, workers * 2)
-    qmax = max(workers, min(qmax, 64))
+    qmax = max(workers, min(qmax, 999))
 
     block_sec = 120.0
     try:
