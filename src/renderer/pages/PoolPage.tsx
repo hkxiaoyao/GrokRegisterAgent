@@ -1647,6 +1647,7 @@ function AccountCard({
           >
             <AuthConvertedBadge converted={authConverted} channel={authChannel} />
             <SsoBadge result={ssoResult} />
+            <RiskScoreBadge result={ssoResult} />
             <NsfwBadge
               status={
                 account.nsfwStatus ??
@@ -1827,6 +1828,49 @@ function SsoBadge({ result }: { result?: SsoCheckResult }) {
       title={(result.error || 'Dead · 失效') + when}
     >
       Dead
+    </span>
+  );
+}
+
+/** 风险系数 tag：有值 0.xx；无值 muted None（与详情卡同风格） */
+function RiskScoreBadge({ result }: { result?: SsoCheckResult }) {
+  const score = result?.riskScore;
+  const has =
+    typeof score === 'number' && Number.isFinite(score) && score >= 0 && score <= 1;
+  const titleParts = [
+    has ? `risk=${(score as number).toFixed(2)}` : '无 risk 分',
+    result?.riskLevel ? `level=${result.riskLevel}` : '',
+    result?.riskEvent ? `event=${result.riskEvent}` : '',
+    result?.botFlagDetails ? String(result.botFlagDetails).slice(0, 120) : ''
+  ].filter(Boolean);
+  const title = titleParts.join(' · ') || 'Castle 风险系数（验活 get-user 解析）';
+
+  if (!has) {
+    return (
+      <span
+        className="inline-flex h-5 shrink-0 items-center rounded-full bg-muted px-2 text-[10px] font-medium leading-none text-muted-foreground"
+        title={title}
+      >
+        None
+      </span>
+    );
+  }
+
+  const high = (score as number) >= 0.9;
+  const mid = (score as number) >= 0.5;
+  return (
+    <span
+      className={cn(
+        'inline-flex h-5 shrink-0 items-center rounded-full px-2 font-mono text-[10px] font-medium leading-none tabular-nums',
+        high
+          ? 'bg-destructive/15 text-destructive'
+          : mid
+            ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+            : 'bg-muted text-muted-foreground'
+      )}
+      title={title}
+    >
+      {(score as number).toFixed(2)}
     </span>
   );
 }
