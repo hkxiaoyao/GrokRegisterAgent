@@ -579,51 +579,70 @@ _EMAIL_LAST = (
 )
 
 
-def _generate_local_part(min_len=8, max_len=16) -> str:
-    """生成更像真人的邮箱本地部分：姓名 + 数字（非纯随机串）。
+def _generate_local_part(min_len=8, max_len=18) -> str:
+    """生成更像真人的邮箱本地部分：姓名 + 可选下划线 + 数字。
 
-    示例：john47 / emily203 / mikechen88 / sarahw1992
-    仅 [a-z0-9]，首字符字母；长度约 8～16。
+    示例：john47 / emily_w203 / mike_chen88 / j_smith1992
+    字符集 [a-z0-9_]，首字符字母，不下划线开头/结尾、无连续 __。
     """
     first = random.choice(_EMAIL_FIRST)
     last = random.choice(_EMAIL_LAST)
-    # 数字：2～4 位为主；偶尔像年份后两位/四位
+    # 数字：2～4 位为主；偶尔像出生年
     style = random.random()
     if style < 0.55:
         digits = str(random.randint(10, 9999))
     elif style < 0.8:
         digits = str(random.randint(10, 99))
     else:
-        digits = str(random.randint(1975, 2005))  # 像出生年
+        digits = str(random.randint(1975, 2005))
 
-    # 组合模式（权重偏「名+数字」「名+姓缩写+数字」）
+    # 约 40% 带下划线（真人常用 first_last / first_l）
+    use_us = random.random() < 0.40
     mode = random.random()
-    if mode < 0.42:
-        local = f"{first}{digits}"
-    elif mode < 0.68:
-        local = f"{first}{last[0]}{digits}"
-    elif mode < 0.88:
-        # 名+姓（姓截短）+ 数字，避免过长
-        ln = last if len(last) <= 6 else last[: random.randint(3, 6)]
-        local = f"{first}{ln}{digits}"
+    if use_us:
+        if mode < 0.35:
+            local = f"{first}_{digits}"
+        elif mode < 0.65:
+            local = f"{first}_{last[0]}{digits}"
+        elif mode < 0.88:
+            ln = last if len(last) <= 6 else last[: random.randint(3, 6)]
+            local = f"{first}_{ln}{digits}"
+        else:
+            local = f"{first[0]}_{last}{digits}"
     else:
-        # 名首字母 + 姓 + 数字
-        local = f"{first[0]}{last}{digits}"
+        if mode < 0.42:
+            local = f"{first}{digits}"
+        elif mode < 0.68:
+            local = f"{first}{last[0]}{digits}"
+        elif mode < 0.88:
+            ln = last if len(last) <= 6 else last[: random.randint(3, 6)]
+            local = f"{first}{ln}{digits}"
+        else:
+            local = f"{first[0]}{last}{digits}"
 
-    local = re.sub(r"[^a-z0-9]", "", local.lower())
+    local = re.sub(r"[^a-z0-9_]", "", local.lower())
+    local = re.sub(r"_+", "_", local).strip("_")
     if not local or not local[0].isalpha():
         local = first + digits
-    # 长度钳制：过长截尾数字前保留名；过短补数字
+    # 长度钳制
     if len(local) > max_len:
-        # 保留开头字母段 + 尾部若干数字
-        keep = max_len - 2
-        prefix = re.sub(r"\d+$", "", local)[: max(4, keep - 2)]
-        local = (prefix + digits)[:max_len]
+        # 尽量保留名/_ 结构 + 尾部数字
+        core = re.sub(r"[\d_]+$", "", local)
+        core = core[: max(4, max_len - len(digits) - 1)].rstrip("_")
+        if not core:
+            core = first[:4]
+        # 原串若有下划线且 core 不含，补一条（更像 first_digits）
+        if "_" in local and "_" not in core and len(core) + 1 + len(digits) <= max_len:
+            local = f"{core}_{digits}"
+        else:
+            local = f"{core}{digits}"
+        local = local[:max_len].rstrip("_")
         if not local[0].isalpha():
-            local = first[:3] + local[1:]
+            local = first[:3] + re.sub(r"^[^a-z]+", "", local)
+    local = re.sub(r"_+", "_", local).strip("_")
     while len(local) < min_len:
         local += str(random.randint(0, 9))
-    return local[:max_len]
+    return local[:max_len].rstrip("_")
 
 
 def _cf_auth_mode() -> str:
