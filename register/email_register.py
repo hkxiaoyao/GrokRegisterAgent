@@ -1,5 +1,6 @@
 
 from __future__ import annotations
+import os
 
 import json
 import random
@@ -105,7 +106,15 @@ def get_email_and_token() -> Tuple[Optional[str], Optional[str]]:
     创建临时邮箱，返回 (email, token)。
     provider: cloudflare（默认）| duckmail | yyds
     token 用于后续轮询验证码（CF=jwt，duck/yyds=jwt 或 account token）。
+
+    本地手动邮箱：
+      env REGISTER_FORCE_EMAIL=user@domain
+      → 跳过创建，token 记为 "manual"（配合 get_oai_code 手输 OTP）
     """
+    force = (os.environ.get("REGISTER_FORCE_EMAIL") or os.environ.get("FORCE_EMAIL") or "").strip()
+    if force and "@" in force:
+        print(f"[*] REGISTER_FORCE_EMAIL={force}（跳过自动建邮，OTP 走手动/文件）", flush=True)
+        return force, "manual"
     provider = _mail_provider()
     if provider == "duckmail":
         email, token = _create_duckmail()
@@ -413,7 +422,88 @@ def get_oai_code(dev_token: str, email: str, timeout: int = 30) -> Optional[str]
     """
     轮询邮箱获取 Grok/x.ai 发来的 OTP 验证码。
     返回去掉连字符后的字符串（如 "MM0SF3"），失败返回 None。
+
+    手动 OTP：
+      - token == "manual" 或 env REGISTER_MANUAL_OTP=1
+      - 读 env REGISTER_OTP / REGISTER_FORCE_OTP
+      - 或轮询文件：register/_manual_otp.txt / out/local_test/manual_otp.txt
+        内容写 6 位码即可（可带连字符）
     """
+    import time as _time
+    import re as _re
+
+    manual = (
+        str(dev_token or "").strip().lower() == "manual"
+        or (os.environ.get("REGISTER_MANUAL_OTP") or "").strip().lower() in ("1", "true", "yes", "on")
+    )
+    if manual:
+        deadline = _time.time() + max(30, int(timeout or 30))
+        paths = [
+            Path(__file__).resolve().parent / "_manual_otp.txt",
+            Path(__file__).resolve().parent.parent / "out" / "local_test" / "manual_otp.txt",
+        ]
+        print(
+            f"[*] 手动 OTP 模式 email={email or '-'} · 请把验证码写入: "
+            f"{paths[0]} 或 {paths[1]} · 也可设 env REGISTER_OTP",
+            flush=True,
+        )
+        # clear stale file once
+        for fp in paths:
+            try:
+                if fp.is_file() and fp.stat().st_size > 0:
+                    # keep content if freshly written (<2s) else clear hint only
+                    pass
+            except Exception:
+                pass
+        last_hint = 0.0
+        while _time.time() < deadline:
+            env_code = (
+                os.environ.get("REGISTER_OTP")
+                or os.environ.get("REGISTER_FORCE_OTP")
+                or os.environ.get("FORCE_OTP")
+                or ""
+            ).strip()
+            raw = env_code
+            if not raw:
+                for fp in paths:
+                    try:
+                        if fp.is_file():
+                            raw = fp.read_text(encoding="utf-8", errors="replace").strip()
+                            if raw:
+                                break
+                    except Exception:
+                        continue
+            if raw:
+                m = _re.search(r"([A-Za-z0-9]{3})-?([A-Za-z0-9]{3})", raw)
+                if not m:
+                    m = _re.search(r"([A-Za-z0-9]{6})", raw)
+                if m:
+                    if m.lastindex and m.lastindex >= 2:
+                        code = (m.group(1) + m.group(2)).upper()
+                    else:
+                        code = m.group(1).upper()
+                    code = code.replace("-", "")
+                    print(f"[*] 手动 OTP 已读到: {code[:3]}-{code[3:]}", flush=True)
+                    # consume file so next run won't reuse
+                    for fp in paths:
+                        try:
+                            if fp.is_file():
+                                fp.write_text("", encoding="utf-8")
+                        except Exception:
+                            pass
+                    os.environ.pop("REGISTER_OTP", None)
+                    os.environ.pop("REGISTER_FORCE_OTP", None)
+                    os.environ.pop("FORCE_OTP", None)
+                    return code
+            now = _time.time()
+            if now - last_hint > 8:
+                left = int(deadline - now)
+                print(f"[*] 等待手动 OTP… 剩余约 {left}s（写文件或 REGISTER_OTP）", flush=True)
+                last_hint = now
+            _time.sleep(1.0)
+        print("[!] 手动 OTP 超时", flush=True)
+        return None
+
     code = wait_for_verification_code(jwt=dev_token, timeout=timeout, email=email or "")
     if code:
         code = code.replace("-", "")
@@ -461,13 +551,79 @@ def _do_request(session, use_cffi, method, url, **kwargs):
     return getattr(session, method)(url, **kwargs)
 
 
-def _generate_local_part(min_len=8, max_len=13) -> str:
-    chars = string.ascii_lowercase + string.digits
-    length = random.randint(min_len, max_len)
-    # 首字符必须是字母，避免某些校验拒绝纯数字开头
-    return random.choice(string.ascii_lowercase) + "".join(
-        random.choice(chars) for _ in range(length - 1)
-    )
+# 常见英文名（小写）——邮箱本地部分用人名+数字，避免 0dk0tgkzw2nj 这类随机串
+_EMAIL_FIRST = (
+    "aaron", "adam", "adrian", "alan", "alex", "alice", "allen", "amy", "andrew",
+    "anna", "anthony", "ashley", "austin", "ben", "brian", "caleb", "carl", "carol",
+    "charles", "chris", "claire", "cody", "daniel", "david", "dean", "diana", "dylan",
+    "edward", "eli", "ella", "emily", "eric", "ethan", "eva", "evan", "felix", "frank",
+    "gabriel", "grace", "grant", "hannah", "harry", "henry", "ian", "isaac", "jack",
+    "jacob", "james", "jane", "jason", "jay", "jennifer", "jessica", "john", "jordan",
+    "joseph", "josh", "julia", "justin", "karen", "kate", "kevin", "kyle", "laura",
+    "lauren", "leo", "linda", "logan", "lucas", "lucy", "luke", "mark", "martin",
+    "mary", "mason", "matt", "megan", "mike", "nancy", "nathan", "noah", "olivia",
+    "oscar", "owen", "paul", "peter", "rachel", "ralph", "ray", "rebecca", "robert",
+    "rose", "ryan", "sam", "sarah", "scott", "sean", "sophia", "steve", "susan",
+    "thomas", "tim", "tyler", "victor", "vincent", "wayne", "will", "william", "zoe",
+)
+_EMAIL_LAST = (
+    "adams", "allen", "anderson", "baker", "bell", "brooks", "brown", "campbell",
+    "carter", "chen", "clark", "collins", "cook", "cooper", "davis", "edwards",
+    "evans", "fisher", "foster", "garcia", "green", "hall", "harris", "hill",
+    "howard", "jackson", "james", "johnson", "jones", "kelly", "kim", "king",
+    "lee", "lewis", "lin", "lopez", "martin", "miller", "moore", "morgan",
+    "morris", "nelson", "nguyen", "parker", "patel", "perez", "phillips", "price",
+    "reed", "roberts", "robinson", "ross", "scott", "smith", "taylor", "thomas",
+    "thompson", "turner", "walker", "wang", "ward", "white", "williams", "wilson",
+    "wood", "wright", "young", "zhang",
+)
+
+
+def _generate_local_part(min_len=8, max_len=16) -> str:
+    """生成更像真人的邮箱本地部分：姓名 + 数字（非纯随机串）。
+
+    示例：john47 / emily203 / mikechen88 / sarahw1992
+    仅 [a-z0-9]，首字符字母；长度约 8～16。
+    """
+    first = random.choice(_EMAIL_FIRST)
+    last = random.choice(_EMAIL_LAST)
+    # 数字：2～4 位为主；偶尔像年份后两位/四位
+    style = random.random()
+    if style < 0.55:
+        digits = str(random.randint(10, 9999))
+    elif style < 0.8:
+        digits = str(random.randint(10, 99))
+    else:
+        digits = str(random.randint(1975, 2005))  # 像出生年
+
+    # 组合模式（权重偏「名+数字」「名+姓缩写+数字」）
+    mode = random.random()
+    if mode < 0.42:
+        local = f"{first}{digits}"
+    elif mode < 0.68:
+        local = f"{first}{last[0]}{digits}"
+    elif mode < 0.88:
+        # 名+姓（姓截短）+ 数字，避免过长
+        ln = last if len(last) <= 6 else last[: random.randint(3, 6)]
+        local = f"{first}{ln}{digits}"
+    else:
+        # 名首字母 + 姓 + 数字
+        local = f"{first[0]}{last}{digits}"
+
+    local = re.sub(r"[^a-z0-9]", "", local.lower())
+    if not local or not local[0].isalpha():
+        local = first + digits
+    # 长度钳制：过长截尾数字前保留名；过短补数字
+    if len(local) > max_len:
+        # 保留开头字母段 + 尾部若干数字
+        keep = max_len - 2
+        prefix = re.sub(r"\d+$", "", local)[: max(4, keep - 2)]
+        local = (prefix + digits)[:max_len]
+        if not local[0].isalpha():
+            local = first[:3] + local[1:]
+    while len(local) < min_len:
+        local += str(random.randint(0, 9))
+    return local[:max_len]
 
 
 def _cf_auth_mode() -> str:
