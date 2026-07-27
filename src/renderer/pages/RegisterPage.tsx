@@ -288,6 +288,7 @@ function RuntimeSettingsInline() {
   const dirty =
     !!data &&
     (data.runCount !== draft.runCount ||
+      (data.registerIntervalMin ?? 1) !== (draft.registerIntervalMin ?? 1) ||
       (data.registerPlanAEnabled !== false) !== planA ||
       (data.registerPlanBEnabled !== false) !== planB ||
       (data.registerPlanCEnabled === true || data.registerMode === 'hybrid') !== planC ||
@@ -337,9 +338,14 @@ function RuntimeSettingsInline() {
     try {
       const planC =
         draft.registerPlanCEnabled === true || draft.registerMode === 'hybrid';
+      const ivRaw = Number(draft.registerIntervalMin ?? 1);
+      const registerIntervalMin = Number.isFinite(ivRaw)
+        ? Math.max(0, Math.min(31, Math.floor(ivRaw)))
+        : 1;
       const next = {
         ...data!,
         runCount: draft.runCount,
+        registerIntervalMin,
         // 并行上限固定 3，首页不再开放修改
         maxParallelWorkers: 3,
         registerPlanAEnabled: draft.registerPlanAEnabled !== false,
@@ -374,6 +380,9 @@ function RuntimeSettingsInline() {
     '—';
   const mintSummary =
     mintMode === 'device' ? 'Mint B' : mintMode === 'double' ? 'Mint C' : 'Mint A';
+  const intervalVal = draft.registerIntervalMin ?? 1;
+  const intervalSummary =
+    intervalVal <= 0 ? '间隔 0' : intervalVal >= 31 ? '间隔 随机5–20' : `间隔 ${intervalVal}min`;
 
   return (
     <div className="rounded-xl border border-border bg-card/80 p-3.5 shadow-[var(--ios-shadow)]">
@@ -394,7 +403,7 @@ function RuntimeSettingsInline() {
             <p className="mt-0.5 text-[11px] text-muted-foreground">
               {open
                 ? '保存后下次启动生效 · Plan 可多选 · Mint 三选一'
-                : `轮数 ${draft.runCount} · 并行 3 · Plan ${planSummary} · ${mintSummary}`}
+                : `轮数 ${draft.runCount} · ${intervalSummary} · 并行 3 · Plan ${planSummary} · ${mintSummary}`}
             </p>
           </div>
         </button>
@@ -412,7 +421,7 @@ function RuntimeSettingsInline() {
       </div>
       {open ? (
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <div className="rounded-xl border border-border/60 bg-muted/50 p-3 sm:col-span-2">
+        <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="field-label">轮数（每路）</div>
             <span className="chip tabular-nums">{draft.runCount}</span>
@@ -423,6 +432,29 @@ function RuntimeSettingsInline() {
               max={721}
               value={draft.runCount}
               onValueChange={(v) => update('runCount', v)}
+            />
+          </div>
+        </div>
+        <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="field-label">注册间隔</div>
+            <span className="chip tabular-nums">
+              {intervalVal <= 0 ? '0' : intervalVal >= 31 ? '随机' : `${intervalVal}min`}
+            </span>
+          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            {intervalVal <= 0
+              ? '0 = 不等待'
+              : intervalVal >= 31
+                ? '最高档 = 随机 5～20 分钟'
+                : `每轮后等 ${intervalVal} 分钟`}
+          </div>
+          <div className="mt-2">
+            <Slider
+              min={0}
+              max={31}
+              value={intervalVal}
+              onValueChange={(v) => update('registerIntervalMin', v)}
             />
           </div>
         </div>
