@@ -340,7 +340,7 @@ function RuntimeSettingsInline() {
         draft.registerPlanCEnabled === true || draft.registerMode === 'hybrid';
       const ivRaw = Number(draft.registerIntervalMin ?? 1);
       const registerIntervalMin = Number.isFinite(ivRaw)
-        ? Math.max(0, Math.min(31, Math.floor(ivRaw)))
+        ? Math.max(0, Math.min(61, Math.floor(ivRaw)))
         : 1;
       const next = {
         ...data!,
@@ -382,7 +382,7 @@ function RuntimeSettingsInline() {
     mintMode === 'device' ? 'Mint B' : mintMode === 'double' ? 'Mint C' : 'Mint A';
   const intervalVal = draft.registerIntervalMin ?? 1;
   const intervalSummary =
-    intervalVal <= 0 ? '间隔 0' : intervalVal >= 31 ? '间隔 随机5–20' : `间隔 ${intervalVal}min`;
+    intervalVal <= 0 ? '间隔 0' : intervalVal >= 61 ? '间隔 随机25–50' : `间隔 ${intervalVal}min`;
 
   return (
     <div className="rounded-xl border border-border bg-card/80 p-3.5 shadow-[var(--ios-shadow)]">
@@ -439,20 +439,20 @@ function RuntimeSettingsInline() {
           <div className="flex items-center justify-between gap-2">
             <div className="field-label">注册间隔</div>
             <span className="chip tabular-nums">
-              {intervalVal <= 0 ? '0' : intervalVal >= 31 ? '随机' : `${intervalVal}min`}
+              {intervalVal <= 0 ? '0' : intervalVal >= 61 ? '随机' : `${intervalVal}min`}
             </span>
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground">
             {intervalVal <= 0
               ? '0 = 不等待'
-              : intervalVal >= 31
-                ? '最高档 = 随机 5～20 分钟'
+              : intervalVal >= 61
+                ? '最高档 = 随机 25～50 分钟'
                 : `每轮后等 ${intervalVal} 分钟`}
           </div>
           <div className="mt-2">
             <Slider
               min={0}
-              max={31}
+              max={61}
               value={intervalVal}
               onValueChange={(v) => update('registerIntervalMin', v)}
             />

@@ -558,13 +558,13 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
     };
   }
   // 注册轮次间隔 → Python register_interval_min
-  // 0=不等待；1～30 固定分钟；31=随机 5～20 分钟
+  // 0=不等待；1～60 固定分钟；61=随机 25～50 分钟
   {
     const iv = Number(
       (settings as { registerIntervalMin?: number }).registerIntervalMin ?? 1
     );
     if (Number.isFinite(iv)) {
-      config.register_interval_min = Math.max(0, Math.min(31, Math.floor(iv)));
+      config.register_interval_min = Math.max(0, Math.min(61, Math.floor(iv)));
     } else {
       config.register_interval_min = 1;
     }
