@@ -1032,31 +1032,56 @@ export function SettingsForm() {
               : '未启用方案';
             const fp = draft.randomFingerprint ? '随机指纹' : '固定指纹';
             const wait = draft.turnstileAutoWaitMax ?? 60;
-            return `${planText} · ${fp} · Turnstile ≤${wait}s`;
+            const iv = draft.registerIntervalMin ?? 1;
+            return `${planText} · ${fp} · Turnstile ≤${wait}s · 间隔 ${iv}min`;
           })()}
         />
         <CardBody className="space-y-3">
-          <div className="rounded-xl bg-muted/70 p-4">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="field-label">人机验证 · 自动等待上限</div>
-                <div className="mt-1 text-[12px] text-muted-foreground">
-                  Turnstile：每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
+          <div className="grid gap-3 sm:grid-cols-2">
+            <div className="rounded-xl bg-muted/70 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="field-label">人机验证 · 自动等待上限</div>
+                  <div className="mt-1 text-[12px] text-muted-foreground">
+                    Turnstile：每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
+                  </div>
                 </div>
+                <span className="chip tabular-nums">{draft.turnstileAutoWaitMax ?? 60}s</span>
               </div>
-              <span className="chip tabular-nums">{draft.turnstileAutoWaitMax ?? 60}s</span>
+              <div className="mt-3">
+                <Slider
+                  min={30}
+                  max={180}
+                  value={draft.turnstileAutoWaitMax ?? 60}
+                  onValueChange={(v) => update('turnstileAutoWaitMax', v)}
+                />
+              </div>
+              {errors.turnstileAutoWaitMax && (
+                <p className="mt-2 text-xs text-danger">{errors.turnstileAutoWaitMax}</p>
+              )}
             </div>
-            <div className="mt-3">
-              <Slider
-                min={30}
-                max={180}
-                value={draft.turnstileAutoWaitMax ?? 60}
-                onValueChange={(v) => update('turnstileAutoWaitMax', v)}
-              />
+            <div className="rounded-xl bg-muted/70 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="field-label">注册间隔</div>
+                  <div className="mt-1 text-[12px] text-muted-foreground">
+                    每轮结束后等待 {draft.registerIntervalMin ?? 1} 分钟再开下一轮
+                  </div>
+                </div>
+                <span className="chip tabular-nums">{draft.registerIntervalMin ?? 1}min</span>
+              </div>
+              <div className="mt-3">
+                <Slider
+                  min={1}
+                  max={30}
+                  value={draft.registerIntervalMin ?? 1}
+                  onValueChange={(v) => update('registerIntervalMin', v)}
+                />
+              </div>
+              {errors.registerIntervalMin && (
+                <p className="mt-2 text-xs text-danger">{errors.registerIntervalMin}</p>
+              )}
             </div>
-            {errors.turnstileAutoWaitMax && (
-              <p className="mt-2 text-xs text-danger">{errors.turnstileAutoWaitMax}</p>
-            )}
           </div>
           <ToggleRow
             label="随机注册特征"

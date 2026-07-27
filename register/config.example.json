@@ -5,6 +5,8 @@
     "turnstile": {
         "auto_wait_max": 60
     },
+    "register_interval_min": 1,
+    "_comment_register_interval_min": "每轮注册结束后等待分钟数再开下一轮；1～30，UI 注册方案 · 注册间隔",
     "mail_provider": "cloudflare",
     "mail_api_base": "https://your-cloudflare-temp-email-api.example.com",
     "mail_admin_auth": "<cloudflare_temp_email_admin_password>",

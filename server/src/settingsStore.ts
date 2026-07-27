@@ -444,6 +444,13 @@ function merge(partial: unknown): AppSettings {
   ) {
     merged.turnstileAutoWaitMax = DEFAULT_SETTINGS.turnstileAutoWaitMax;
   }
+  if (
+    !Number.isInteger(merged.registerIntervalMin) ||
+    merged.registerIntervalMin < 1 ||
+    merged.registerIntervalMin > 30
+  ) {
+    merged.registerIntervalMin = DEFAULT_SETTINGS.registerIntervalMin;
+  }
   // CF 与普通代理/池二选一
   const withMutex = enforceProxyModeMutex(merged);
   return applyEnvOverrides(withMutex, p);

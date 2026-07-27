@@ -101,6 +101,12 @@ export interface AppSettings {
    */
   turnstileAutoWaitMax: number;
   /**
+   * 注册轮次间隔（分钟）。
+   * 每轮成功/失败后等待再开下一轮；范围 1～30，默认 1。
+   * 写入 Python：register_interval_min
+   */
+  registerIntervalMin: number;
+  /**
    * 是否启用外置 Turnstile Solver（本地子容器 / 远程 URL）。
    * 默认 false。开启后页内点选失败可回落 HTTP solver。
    * 写入 Python config：turnstile_solver_enabled
@@ -416,6 +422,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   runCount: 10,
   maxParallelWorkers: 3,
   turnstileAutoWaitMax: 60,
+  registerIntervalMin: 1,
   turnstileSolverEnabled: false,
   turnstileSolverUrl: 'http://turnstile-solver:5072',
   yescaptchaKey: '',
@@ -1314,6 +1321,13 @@ export function validateSettings(s: AppSettings): Record<string, string> {
       s.turnstileAutoWaitMax > 180
     ) {
       errors.turnstileAutoWaitMax = '人机验证自动等待上限须在 30 到 180 秒之间';
+    }
+    if (
+      !Number.isInteger(s.registerIntervalMin) ||
+      s.registerIntervalMin < 1 ||
+      s.registerIntervalMin > 30
+    ) {
+      errors.registerIntervalMin = '注册间隔须在 1 到 30 分钟之间';
     }
     {
       const dMin = Number(s.autoAuthDelayMinSec);

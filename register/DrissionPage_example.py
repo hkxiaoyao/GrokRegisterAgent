@@ -3104,6 +3104,24 @@ return true;
         return False
 
 
+def _load_register_interval_min() -> int:
+    """轮次间隔（分钟），config register_interval_min / registerIntervalMin。范围 1～30，默认 1。"""
+    try:
+        import json as _j
+        conf_path = os.path.join(os.path.dirname(__file__), "config.json")
+        if not os.path.isfile(conf_path):
+            return 1
+        with open(conf_path, "r", encoding="utf-8") as f:
+            conf = _j.load(f) or {}
+        raw = conf.get("register_interval_min")
+        if raw is None:
+            raw = conf.get("registerIntervalMin")
+        n = int(raw) if raw is not None and str(raw).strip() != "" else 1
+    except Exception:
+        n = 1
+    return max(1, min(30, n))
+
+
 def _load_turnstile_auto_wait_max() -> int:
     """
     从 config.json 读取 Turnstile 自动通过等待上限（秒）。
@@ -6375,7 +6393,18 @@ def main():
                     pass
 
             if args.count == 0 or current_round < args.count:
-                time.sleep(0.5)
+                # 注册间隔（分钟）：设置「注册方案 · 注册间隔」
+                try:
+                    _iv_min = _load_register_interval_min()
+                except Exception:
+                    _iv_min = 1
+                _iv_sec = max(60, min(30 * 60, int(_iv_min) * 60))
+                print(
+                    f"[*] 注册间隔 {_iv_min} 分钟（{_iv_sec}s）后开始下一轮…",
+                    flush=True,
+                )
+                time.sleep(_iv_sec)
+
 
     finally:
         stop_browser()

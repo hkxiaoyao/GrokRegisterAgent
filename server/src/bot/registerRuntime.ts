@@ -557,6 +557,17 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
       auto_wait_max: Math.min(180, Math.floor(autoMax))
     };
   }
+  // 注册轮次间隔（分钟）→ Python register_interval_min
+  {
+    const iv = Number(
+      (settings as { registerIntervalMin?: number }).registerIntervalMin ?? 1
+    );
+    if (Number.isFinite(iv)) {
+      config.register_interval_min = Math.max(1, Math.min(30, Math.floor(iv)));
+    } else {
+      config.register_interval_min = 1;
+    }
+  }
 
   // 外置 Turnstile Solver / YesCaptcha（可选）
   const solverOn =
