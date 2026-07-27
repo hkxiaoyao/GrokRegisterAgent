@@ -44,9 +44,17 @@ uploads/
 register/BUILD_ID
 BUILD_ID
 
-# local superpowers plans/specs — do not push
-docs/superpowers/
+# 本地文档 / 交接 / 计划 — 不推远端（仅本机）
+docs/
 .superpowers/
+
+# 一次性补丁脚本、本地备份、手输 OTP 等 — 不推远端
+register/_patch_*.py
+register/_config_bak*
+register/*_bak*.json
+register/_manual_otp.txt
+register/_*.tmp
+register/_*.bak
 
 # local test cache
 .pytest_cache/
