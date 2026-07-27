@@ -1034,7 +1034,7 @@ export function SettingsForm() {
             const wait = draft.turnstileAutoWaitMax ?? 60;
             const iv = draft.registerIntervalMin ?? 1;
             const ivText =
-              iv <= 0 ? '间隔 0' : iv >= 30 ? '间隔 随机5–20min' : `间隔 ${iv}min`;
+              iv <= 0 ? '间隔 0' : iv >= 31 ? '间隔 随机5–20min' : `间隔 ${iv}min`;
             return `${planText} · ${fp} · Turnstile ≤${wait}s · ${ivText}`;
           })()}
         />
@@ -1069,7 +1069,7 @@ export function SettingsForm() {
                   <div className="mt-1 text-[12px] text-muted-foreground">
                     {(draft.registerIntervalMin ?? 1) <= 0
                       ? '0 = 不等待，立即下一轮'
-                      : (draft.registerIntervalMin ?? 1) >= 30
+                      : (draft.registerIntervalMin ?? 1) >= 31
                         ? '最高档 = 随机 5～20 分钟'
                         : `每轮结束后等待 ${draft.registerIntervalMin ?? 1} 分钟再开下一轮`}
                   </div>
@@ -1077,7 +1077,7 @@ export function SettingsForm() {
                 <span className="chip tabular-nums">
                   {(draft.registerIntervalMin ?? 1) <= 0
                     ? '0'
-                    : (draft.registerIntervalMin ?? 1) >= 30
+                    : (draft.registerIntervalMin ?? 1) >= 31
                       ? '随机'
                       : `${draft.registerIntervalMin ?? 1}min`}
                 </span>
@@ -1085,7 +1085,7 @@ export function SettingsForm() {
               <div className="mt-3">
                 <Slider
                   min={0}
-                  max={30}
+                  max={31}
                   value={draft.registerIntervalMin ?? 1}
                   onValueChange={(v) => update('registerIntervalMin', v)}
                 />

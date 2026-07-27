@@ -3105,10 +3105,10 @@ return true;
 
 
 def _load_register_interval_min() -> int:
-    """轮次间隔（分钟）。
+    """轮次间隔档位。
 
     config: register_interval_min / registerIntervalMin
-    0 = 不等待；1～29 = 固定分钟；30 = 随机 5～20 分钟。默认 1。
+    0 = 不等待；1～30 = 固定分钟；31 = 随机 5～20 分钟。默认 1。
     """
     try:
         import json as _j
@@ -3123,20 +3123,20 @@ def _load_register_interval_min() -> int:
         n = int(raw) if raw is not None and str(raw).strip() != "" else 1
     except Exception:
         n = 1
-    return max(0, min(30, n))
+    return max(0, min(31, n))
 
 
 def _resolve_register_interval_sec(iv_min=None):
-    """返回 (sleep_sec, log_label)。30 = 随机 5～20 分钟。"""
+    """返回 (sleep_sec, log_label)。31 = 随机 5～20 分钟。"""
     if iv_min is None:
         try:
             iv_min = _load_register_interval_min()
         except Exception:
             iv_min = 1
-    n = max(0, min(30, int(iv_min or 0)))
+    n = max(0, min(31, int(iv_min or 0)))
     if n <= 0:
         return 0, "0 分钟（不等待）"
-    if n >= 30:
+    if n >= 31:
         import random as _rnd
         pick = _rnd.randint(5, 20)
         return pick * 60, f"随机 {pick} 分钟（区间 5～20）"
@@ -6414,7 +6414,7 @@ def main():
                     pass
 
             if args.count == 0 or current_round < args.count:
-                # 注册间隔：0=不等待；1～29 固定分钟；30=随机 5～20 分钟
+                # 注册间隔：0=不等待；1～30 固定分钟；31=随机 5～20 分钟
                 try:
                     _iv_sec, _iv_label = _resolve_register_interval_sec()
                 except Exception:

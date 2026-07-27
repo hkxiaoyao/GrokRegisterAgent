@@ -6,7 +6,7 @@
         "auto_wait_max": 60
     },
     "register_interval_min": 1,
-    "_comment_register_interval_min": "轮次间隔分钟：0=不等待；1～29 固定；30=随机 5～20 分钟。UI 注册方案 · 注册间隔",
+    "_comment_register_interval_min": "档位：0=不等待；1～30=固定分钟；31=随机 5～20 分钟。UI 注册方案 · 注册间隔",
     "mail_provider": "cloudflare",
     "mail_api_base": "https://your-cloudflare-temp-email-api.example.com",
     "mail_admin_auth": "<cloudflare_temp_email_admin_password>",
