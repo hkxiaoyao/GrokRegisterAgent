@@ -1832,29 +1832,20 @@ function SsoBadge({ result }: { result?: SsoCheckResult }) {
   );
 }
 
-/** 风险系数 tag：有值 0.xx；无值 muted None（与详情卡同风格） */
+/** 风险系数 tag：有值才显示 0.xx；未解析到则不渲染（不占 None） */
 function RiskScoreBadge({ result }: { result?: SsoCheckResult }) {
   const score = result?.riskScore;
   const has =
     typeof score === 'number' && Number.isFinite(score) && score >= 0 && score <= 1;
+  if (!has) return null;
+
   const titleParts = [
-    has ? `risk=${(score as number).toFixed(2)}` : '无 risk 分',
+    `risk=${(score as number).toFixed(2)}`,
     result?.riskLevel ? `level=${result.riskLevel}` : '',
     result?.riskEvent ? `event=${result.riskEvent}` : '',
     result?.botFlagDetails ? String(result.botFlagDetails).slice(0, 120) : ''
   ].filter(Boolean);
-  const title = titleParts.join(' · ') || 'Castle 风险系数（验活 get-user 解析）';
-
-  if (!has) {
-    return (
-      <span
-        className="inline-flex h-5 shrink-0 items-center rounded-full bg-muted px-2 text-[10px] font-medium leading-none text-muted-foreground"
-        title={title}
-      >
-        None
-      </span>
-    );
-  }
+  const title = titleParts.join(' · ') || 'Castle 风险系数';
 
   const high = (score as number) >= 0.9;
   const mid = (score as number) >= 0.5;

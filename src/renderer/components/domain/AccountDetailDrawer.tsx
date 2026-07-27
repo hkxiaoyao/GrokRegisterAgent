@@ -328,15 +328,20 @@ export function AccountDetailDrawer({
                       ssoResult.createTime ? fmtBeijing(ssoResult.createTime) : undefined
                     }
                   />
-                  <div className="flex items-start justify-between gap-3">
-                    <span className="shrink-0 text-muted-foreground">风险系数</span>
-                    <RiskScoreValue
-                      score={ssoResult.riskScore}
-                      riskLevel={ssoResult.riskLevel}
-                      riskEvent={ssoResult.riskEvent}
-                      details={ssoResult.botFlagDetails}
-                    />
-                  </div>
+                  {typeof ssoResult.riskScore === 'number' &&
+                  Number.isFinite(ssoResult.riskScore) &&
+                  ssoResult.riskScore >= 0 &&
+                  ssoResult.riskScore <= 1 ? (
+                    <div className="flex items-start justify-between gap-3">
+                      <span className="shrink-0 text-muted-foreground">风险系数</span>
+                      <RiskScoreValue
+                        score={ssoResult.riskScore}
+                        riskLevel={ssoResult.riskLevel}
+                        riskEvent={ssoResult.riskEvent}
+                        details={ssoResult.botFlagDetails}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               )}
               {ssoResult.error && (
@@ -438,7 +443,7 @@ function KV({
   );
 }
 
-/** 风险系数：有值显示 0.xx；无值用与列表 None 同风格的 muted pill */
+/** 风险系数：仅有 0.xx 时渲染；无值由调用方不展示整行 */
 function RiskScoreValue({
   score,
   riskLevel,
@@ -450,29 +455,24 @@ function RiskScoreValue({
   riskEvent?: string | null;
   details?: string | null;
 }) {
-  const has =
-    typeof score === 'number' && Number.isFinite(score) && score >= 0 && score <= 1;
+  if (
+    typeof score !== 'number' ||
+    !Number.isFinite(score) ||
+    score < 0 ||
+    score > 1
+  ) {
+    return null;
+  }
   const titleParts = [
-    has ? `risk=${score!.toFixed(2)}` : '无 risk 分',
+    `risk=${score.toFixed(2)}`,
     riskLevel ? `level=${riskLevel}` : '',
     riskEvent ? `event=${riskEvent}` : '',
     details ? details.slice(0, 160) : ''
   ].filter(Boolean);
   const title = titleParts.join(' · ');
 
-  if (!has) {
-    return (
-      <span
-        className="inline-flex h-5 shrink-0 items-center rounded-full bg-muted px-2 text-[10px] font-medium leading-none text-muted-foreground"
-        title={title || '尚未解析到 Castle risk=0.xx'}
-      >
-        None
-      </span>
-    );
-  }
-
-  const high = score! >= 0.9;
-  const mid = score! >= 0.5;
+  const high = score >= 0.9;
+  const mid = score >= 0.5;
   return (
     <span
       className={cn(
@@ -485,7 +485,7 @@ function RiskScoreValue({
       )}
       title={title}
     >
-      {score!.toFixed(2)}
+      {score.toFixed(2)}
     </span>
   );
 }
