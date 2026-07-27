@@ -85,10 +85,9 @@ function isNoiseStdoutLine(msg: string): boolean {
     /\[gc\]\s*cleanup_runtime_memory/i,
     /register\s*build:/i,    /recycle_every\s*=/i,
     /set_proxy\/本地转发/i,
-    /邮件\s*API\s*:/i,
     /email_register\s+build/i,
     /邮箱域名池\s*:/,
-    /邮箱创建成功\s*:/,
+    // 保留「邮箱申请/创建成功/未保留自定义名」便于核对人名前缀是否生效
     /等待重定向到\s*grok\.com/i,
     /已追加写入.*(?:sso|SSO).*到文件/,
     /\[auth\]\s*SSO\s*[→\-].*mint/i,
@@ -836,13 +835,30 @@ export class RegisterBot extends EventEmitter {
       return;
     }
 
+    // 入池时间 = SSO 产出/写入时刻，不是注册任务启动（sso_ 文件名时间）
+    let createdAt = new Date().toISOString();
+    try {
+      if (job.currentSsoFile && fs.existsSync(job.currentSsoFile)) {
+        const mtimeMs = fs.statSync(job.currentSsoFile).mtimeMs;
+        if (Number.isFinite(mtimeMs) && mtimeMs > 0) {
+          // mtime 通常就是刚 append 的写出时间；若时钟漂移导致未来时间则回退 now
+          const skew = mtimeMs - Date.now();
+          if (skew <= 60_000) {
+            createdAt = new Date(mtimeMs).toISOString();
+          }
+        }
+      }
+    } catch {
+      /* keep now */
+    }
+
     const record: AccountRecord = {
       id: randomUUID(),
       runId,
       email: finalEmail,
       password: finalPassword,
       sso: finalSso,
-      createdAt: new Date().toISOString()
+      createdAt
     };
 
     this.push({ type: 'account', runId, record });

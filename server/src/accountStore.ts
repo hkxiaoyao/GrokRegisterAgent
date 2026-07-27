@@ -84,19 +84,31 @@ async function readJsonAccounts(path: string): Promise<AccountRecord[]> {
   }
 }
 
-/** 从文件名解析近似创建时间（sso_YYYYMMDD_HHMMSS_*.txt） */
-function createdAtFromSsoFilename(name: string): string {
+/**
+ * SSO 产出/入池时间（不是「注册任务启动时间」）。
+ *
+ * 注意：`sso_YYYYMMDD_HHMMSS_*.txt` 文件名里的时间是 **整次任务 spawn 时**
+ * 打的戳（registerBot 开跑瞬间），多账号共用同一文件时会全部显示成开队时间。
+ * 因此优先用 **文件 mtime**（append SSO 行时会更新），更接近真实写出时间。
+ * 文件名时间仅作 mtime 不可用时的弱回退（按 UTC 解析，与 toISOString 命名一致）。
+ */
+function createdAtFromSsoFile(name: string): string {
+  const full = join(ssoDir(), name);
+  try {
+    const st = statSync(full);
+    if (st.mtimeMs && Number.isFinite(st.mtimeMs) && st.mtimeMs > 0) {
+      return new Date(st.mtimeMs).toISOString();
+    }
+  } catch {
+    /* fall through */
+  }
   const m = name.match(/sso_(\d{4})(\d{2})(\d{2})[_-](\d{2})(\d{2})(\d{2})/i);
   if (m) {
     const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}.000Z`;
     const d = new Date(iso);
     if (!Number.isNaN(d.getTime())) return d.toISOString();
   }
-  try {
-    return new Date(statSync(join(ssoDir(), name)).mtimeMs).toISOString();
-  } catch {
-    return new Date().toISOString();
-  }
+  return new Date().toISOString();
 }
 
 function parseHistoryLine(line: string, fileName: string, lineIndex: number): AccountRecord | null {
@@ -106,7 +118,7 @@ function parseHistoryLine(line: string, fileName: string, lineIndex: number): Ac
   const base = {
     id: randomUUID(),
     runId: `import:${basename(fileName)}:${lineIndex}`,
-    createdAt: createdAtFromSsoFilename(fileName)
+    createdAt: createdAtFromSsoFile(fileName)
   };
 
   // 标准输出：email | password | sso

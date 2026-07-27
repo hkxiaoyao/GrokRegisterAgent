@@ -125,9 +125,15 @@ def main() -> int:
 
     headers = build_auth_headers(mode, args.key, content_type=True)
     is_admin = path.rstrip("/").lower().endswith("/admin/new_address")
-    local = "".join(
-        secrets.choice(string.ascii_lowercase + string.digits) for _ in range(10)
+    # 人名前缀（纯 a-z0-9）：禁止 . _；. 会成别名，随机串像 e91i5aoj336
+    _firsts = ("john", "emily", "mike", "sarah", "david", "anna", "chris", "laura")
+    _lasts = ("smith", "chen", "wang", "brown", "lee", "garcia", "miller")
+    local = (
+        secrets.choice(_firsts)
+        + secrets.choice(_lasts)[: max(1, secrets.randbelow(4) + 1)]
+        + str(secrets.randbelow(9000) + 100)
     )
+    local = re.sub(r"[^a-z0-9]", "", local.lower())
     if is_admin:
         if not args.domain:
             print("ERROR: admin create needs --domain", file=sys.stderr)
@@ -138,7 +144,8 @@ def main() -> int:
             "enablePrefix": False,
         }
     else:
-        payload = {}
+        # 匿名 /api/new_address 也必须带 name，否则 Worker generateRandomName()
+        payload = {"name": local, "enablePrefix": True}
         if args.domain:
             payload["domain"] = args.domain
 

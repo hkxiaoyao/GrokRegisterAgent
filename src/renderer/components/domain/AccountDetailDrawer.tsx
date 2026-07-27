@@ -150,7 +150,7 @@ export function AccountDetailDrawer({
     >
       <div className="space-y-4 p-4">
         <div className="text-[12px] text-muted-foreground">
-          创建于 {fmtBeijing(account.createdAt)}（北京时间）
+          获取于 {fmtBeijing(account.createdAt)}（北京时间 · SSO 入池）
         </div>
 
         {emailJustFilled && displayEmail && (

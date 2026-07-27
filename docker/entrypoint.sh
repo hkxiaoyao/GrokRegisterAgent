@@ -109,13 +109,20 @@ fi
 if register_is_complete "$REGISTER_DIR"; then
   echo "[entrypoint] register ready: $(ls -1 "${REGISTER_DIR}" | tr '\n' ' ')"
   # 检查热修文件是否在（便于确认宿主机同步）
-  for f in proxy_auth_ext.py proxy_local_forward.py pools.py; do
+  for f in proxy_auth_ext.py proxy_local_forward.py pools.py email_register.py; do
     if [[ -f "${REGISTER_DIR}/${f}" ]]; then
       echo "[entrypoint] OK ${f}"
     else
       echo "[entrypoint] MISSING ${f} — 带密码代理/池轮换可能失效，请检查 ./register 挂载"
     fi
   done
+  # 人名前缀修复是否已同步到容器（避免镜像旧代码仍产 yfyrdisol9q 随机串）
+  if grep -q '_looks_human_local\|_generate_local_part' "${REGISTER_DIR}/email_register.py" 2>/dev/null \
+    && grep -q 'john47\|人名前缀\|只用 a-z0-9\|_looks_human_local' "${REGISTER_DIR}/email_register.py" 2>/dev/null; then
+    echo "[entrypoint] OK email_register human-local-part patch present"
+  else
+    echo "[entrypoint] WARN email_register.py 可能是旧版（无此人名前缀校验）— 请确认 ./register 挂载并 docker compose restart"
+  fi
   # CF 独立代理 Linux 客户端（仅 amd64/arm64；不打包 windows）
   arch="$(uname -m 2>/dev/null || echo x86_64)"
   case "$arch" in

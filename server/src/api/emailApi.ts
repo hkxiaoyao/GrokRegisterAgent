@@ -3,15 +3,54 @@ import { proxiedRequest } from '../httpClient.js';
 
 // Constants removed, now passed dynamically
 
-function generateLocalPart(minLen = 8, maxLen = 13): string {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    const length = Math.floor(Math.random() * (maxLen - minLen + 1)) + minLen;
-    // Starts with letter
-    let res = String.fromCharCode(97 + Math.floor(Math.random() * 26));
-    for (let i = 0; i < length - 1; i++) {
-        res += chars.charAt(Math.floor(Math.random() * chars.length));
+// 人名前缀：禁止 . _ -（. 会成别名；CF 默认正则会剥非 [a-z0-9]）
+const EMAIL_FIRST = [
+    'aaron', 'adam', 'adrian', 'alex', 'alice', 'amy', 'andrew', 'anna', 'ben',
+    'brian', 'chris', 'daniel', 'david', 'emily', 'eric', 'ethan', 'grace',
+    'hannah', 'jack', 'james', 'jane', 'jason', 'john', 'julia', 'kevin',
+    'laura', 'leo', 'linda', 'lucas', 'mark', 'mary', 'mike', 'nathan', 'noah',
+    'olivia', 'paul', 'rachel', 'ryan', 'sam', 'sarah', 'sophia', 'steve',
+    'thomas', 'victor', 'will', 'william', 'zoe',
+];
+const EMAIL_LAST = [
+    'adams', 'allen', 'baker', 'brown', 'chen', 'clark', 'davis', 'garcia',
+    'hall', 'harris', 'jackson', 'johnson', 'jones', 'kim', 'lee', 'martin',
+    'miller', 'moore', 'nguyen', 'smith', 'taylor', 'thomas', 'walker', 'wang',
+    'white', 'williams', 'wilson', 'young', 'zhang',
+];
+
+function generateLocalPart(minLen = 8, maxLen = 16): string {
+    const pick = <T,>(arr: T[]) => arr[Math.floor(Math.random() * arr.length)];
+    for (let attempt = 0; attempt < 8; attempt++) {
+        const first = pick(EMAIL_FIRST);
+        const last = pick(EMAIL_LAST);
+        const style = Math.random();
+        const digits =
+            style < 0.55
+                ? String(Math.floor(Math.random() * 9900) + 10)
+                : style < 0.8
+                  ? String(Math.floor(Math.random() * 90) + 10)
+                  : String(Math.floor(Math.random() * 31) + 1975);
+        const mode = Math.random();
+        let local: string;
+        if (mode < 0.4) local = `${first}${digits}`;
+        else if (mode < 0.65) local = `${first}${last[0]}${digits}`;
+        else if (mode < 0.88) local = `${first}${last.slice(0, Math.min(6, last.length))}${digits}`;
+        else local = `${first[0]}${last}${digits}`;
+        // 禁止 . _ - 等；只保留 a-z0-9
+        local = local.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (!local || !/^[a-z]/.test(local)) local = `${first}${digits}`;
+        if (local.length > maxLen) {
+            const core = local.replace(/\d+$/, '').slice(0, Math.max(4, maxLen - digits.length));
+            local = `${core || first.slice(0, 4)}${digits}`.slice(0, maxLen);
+        }
+        while (local.length < minLen) local += String(Math.floor(Math.random() * 10));
+        local = local.slice(0, maxLen);
+        if (/^[a-z]{3,}[a-z]*\d{1,4}$/.test(local) && !/[._-]/.test(local)) {
+            return local;
+        }
     }
-    return res;
+    return `${pick(EMAIL_FIRST)}${Math.floor(Math.random() * 9000) + 1000}`.slice(0, maxLen);
 }
 
 function normalizeMailApiBase(raw: string): string {
@@ -25,14 +64,14 @@ function normalizeMailApiBase(raw: string): string {
 }
 
 export async function createTempEmail(mailConfig: { apiBase: string, adminAuth: string, domain: string }): Promise<{ address: string; jwt: string; password?: string }> {
-    const local = generateLocalPart();
     const apiBase = normalizeMailApiBase(mailConfig.apiBase);
     if (!apiBase) throw new Error('mail apiBase 为空（需 Worker 根地址，如 https://xxx.workers.dev）');
     const url = `${apiBase}/admin/new_address`;
     const domain = String(mailConfig.domain || '').trim().replace(/^@+/, '');
     
-    // Attempt 3 times
+    // Attempt 3 times（每次换新人名前缀，避免冲突/随机串）
     for (let i = 0; i < 3; i++) {
+        const local = generateLocalPart();
         try {
             const res = await fetch(url, {
                 method: 'POST',
@@ -49,9 +88,15 @@ export async function createTempEmail(mailConfig: { apiBase: string, adminAuth: 
             
             if (res.ok) {
                 const data = await res.json() as any;
-                if (data.jwt && (data.address || `${local}@${domain}`)) {
+                const address = String(data.address || `${local}@${domain}` || '').trim();
+                const addrLocal = address.split('@')[0]?.toLowerCase() || '';
+                if (/[._-]/.test(addrLocal)) {
+                    console.warn(`unsafe local chars in address: ${address}, retry`);
+                    continue;
+                }
+                if (data.jwt && address) {
                     return {
-                        address: data.address || `${local}@${domain}`,
+                        address,
                         jwt: data.jwt,
                         password: data.password
                     };

@@ -118,17 +118,38 @@ def get_email_and_token() -> Tuple[Optional[str], Optional[str]]:
     provider = _mail_provider()
     if provider == "duckmail":
         email, token = _create_duckmail()
-        return email, token
+        return _ensure_human_email(email, token, provider)
     if provider == "yyds":
         email, token = _create_yyds()
-        return email, token
+        return _ensure_human_email(email, token, provider)
     if provider == "gptmail":
         email, token = _create_gptmail()
-        return email, token
+        return _ensure_human_email(email, token, provider)
     email, _password, jwt = create_temp_email()
     if email and jwt:
-        return email, jwt
+        return _ensure_human_email(email, jwt, "cloudflare")
     return None, None
+
+
+def _ensure_human_email(
+    email: Optional[str], token: Optional[str], provider: str
+) -> Tuple[Optional[str], Optional[str]]:
+    """最终闸门：拒绝 e91i5aoj336 / yfyrdisol9q 这类随机 local，以及带 . 的别名风险前缀。"""
+    if not email or not token:
+        return email, token
+    local = str(email).split("@", 1)[0].strip().lower()
+    if "." in local or "_" in local or "-" in local:
+        raise Exception(
+            f"邮箱前缀含 . / _ / -（别名或剥字符风险）: {email} provider={provider}"
+        )
+    if not _looks_human_local(local):
+        raise Exception(
+            f"邮箱前缀不像人名（疑似 Worker 随机名或旧代码）: {email} "
+            f"provider={provider} local={local} "
+            f"— 请确认 Docker 已同步 ./register 并重启；CF 须允许自定义 name"
+        )
+    print(f"[mail] ready address={email} provider={provider} local={local}", flush=True)
+    return email, token
 
 
 def _create_duckmail() -> Tuple[Optional[str], Optional[str]]:
@@ -580,39 +601,34 @@ _EMAIL_LAST = (
 
 
 def _generate_local_part(min_len=8, max_len=18) -> str:
-    """生成更像真人的邮箱本地部分：姓名 + 可选下划线 + 数字。
+    """生成更像真人的邮箱本地部分：姓名 + 数字。
 
-    示例：john47 / emily_w203 / mike_chen88 / j_smith1992
-    字符集 [a-z0-9_]，首字符字母，不下划线开头/结尾、无连续 __。
+    硬性约束（CF / 别名安全）：
+      - **只用 [a-z0-9]**，禁止 `.` `_` `-` 等
+      - `.` 在多数邮件系统里是别名分隔（john.doe ≡ john doe），绝不用
+      - `_` 会被 cloudflare_temp_email 默认 ADDRESS_REGEX 剥掉
+      - 禁止 e91i5aoj336 这类字母数字交错的随机串
+
+    示例：john47 / emilyw203 / mikechen88 / jsmith1992
     """
-    first = random.choice(_EMAIL_FIRST)
-    last = random.choice(_EMAIL_LAST)
-    # 数字：2～4 位为主；偶尔像出生年
-    style = random.random()
-    if style < 0.55:
-        digits = str(random.randint(10, 9999))
-    elif style < 0.8:
-        digits = str(random.randint(10, 99))
-    else:
-        digits = str(random.randint(1975, 2005))
-
-    # 约 40% 带下划线（真人常用 first_last / first_l）
-    use_us = random.random() < 0.40
-    mode = random.random()
-    if use_us:
-        if mode < 0.35:
-            local = f"{first}_{digits}"
-        elif mode < 0.65:
-            local = f"{first}_{last[0]}{digits}"
-        elif mode < 0.88:
-            ln = last if len(last) <= 6 else last[: random.randint(3, 6)]
-            local = f"{first}_{ln}{digits}"
+    # 多试几次，保证最终形态可读（字母前缀 + 尾部数字）
+    for _ in range(8):
+        first = random.choice(_EMAIL_FIRST)
+        last = random.choice(_EMAIL_LAST)
+        # 数字：2～4 位为主；偶尔像出生年
+        style = random.random()
+        if style < 0.55:
+            digits = str(random.randint(10, 9999))
+        elif style < 0.8:
+            digits = str(random.randint(10, 99))
         else:
-            local = f"{first[0]}_{last}{digits}"
-    else:
-        if mode < 0.42:
+            digits = str(random.randint(1975, 2005))
+
+        # 组合模式：纯字母数字；**永不插入 . / _**
+        mode = random.random()
+        if mode < 0.40:
             local = f"{first}{digits}"
-        elif mode < 0.68:
+        elif mode < 0.65:
             local = f"{first}{last[0]}{digits}"
         elif mode < 0.88:
             ln = last if len(last) <= 6 else last[: random.randint(3, 6)]
@@ -620,29 +636,42 @@ def _generate_local_part(min_len=8, max_len=18) -> str:
         else:
             local = f"{first[0]}{last}{digits}"
 
-    local = re.sub(r"[^a-z0-9_]", "", local.lower())
-    local = re.sub(r"_+", "_", local).strip("_")
-    if not local or not local[0].isalpha():
-        local = first + digits
-    # 长度钳制
-    if len(local) > max_len:
-        # 尽量保留名/_ 结构 + 尾部数字
-        core = re.sub(r"[\d_]+$", "", local)
-        core = core[: max(4, max_len - len(digits) - 1)].rstrip("_")
-        if not core:
-            core = first[:4]
-        # 原串若有下划线且 core 不含，补一条（更像 first_digits）
-        if "_" in local and "_" not in core and len(core) + 1 + len(digits) <= max_len:
-            local = f"{core}_{digits}"
-        else:
-            local = f"{core}{digits}"
-        local = local[:max_len].rstrip("_")
-        if not local[0].isalpha():
-            local = first[:3] + re.sub(r"^[^a-z]+", "", local)
-    local = re.sub(r"_+", "_", local).strip("_")
-    while len(local) < min_len:
-        local += str(random.randint(0, 9))
-    return local[:max_len].rstrip("_")
+        # 双保险：剥掉任何非 a-z0-9（含 . _ -）
+        local = re.sub(r"[^a-z0-9]", "", local.lower())
+        if not local or not local[0].isalpha():
+            local = first + digits
+        if len(local) > max_len:
+            core = re.sub(r"\d+$", "", local)[: max(4, max_len - len(digits))]
+            if not core:
+                core = first[:4]
+            local = (core + digits)[:max_len]
+            if not local or not local[0].isalpha():
+                local = first[:3] + re.sub(r"^[^a-z]+", "", local or "")
+        while len(local) < min_len:
+            local += str(random.randint(0, 9))
+        local = local[:max_len]
+        # 形态：至少 3 个连续字母开头，后接可选字母，再接数字尾
+        if re.fullmatch(r"[a-z]{3,}[a-z]*\d{1,4}", local):
+            return local
+    # 兜底：绝不可能落到随机串
+    fb = random.choice(_EMAIL_FIRST) + str(random.randint(10, 9999))
+    return re.sub(r"[^a-z0-9]", "", fb)[:max_len]
+
+
+def _looks_human_local(local: str) -> bool:
+    """判断 local-part 是否像人名前缀（非 e91i5aoj336 随机串）。"""
+    s = (local or "").strip().lower()
+    if not s or "." in s or "_" in s or "-" in s:
+        return False
+    if re.search(r"[^a-z0-9]", s):
+        return False
+    # 字母数字交错过多 → 随机串
+    transitions = sum(
+        1 for i in range(1, len(s)) if s[i].isdigit() != s[i - 1].isdigit()
+    )
+    if transitions >= 3:
+        return False
+    return bool(re.fullmatch(r"[a-z]{3,}[a-z]*\d{0,6}", s))
 
 
 def _cf_auth_mode() -> str:
@@ -780,20 +809,25 @@ def create_temp_email() -> Tuple[str, str, str]:
         is_admin = create_path.rstrip("/").lower().endswith("/admin/new_address")
         if is_admin and not domain:
             raise Exception("mail_domain / mail_domains 未设置，无法创建邮箱地址")
+        # 始终提交自定义 name（人名前缀）。
+        # CF admin API：name 必填；enablePrefix 仅控制是否再拼 Worker PREFIX 环境变量。
+        # 匿名 /api/new_address 若不带 name，服务端会 generateRandomName() → 完全随机串。
+        use_cf_prefix = _truthy_conf("cloudflare_enable_prefix") or _truthy_conf(
+            "mail_enable_prefix"
+        )
         if is_admin:
+            if not domain:
+                raise Exception("mail_domain / mail_domains 未设置，无法创建邮箱地址")
             payload: dict[str, Any] = {
                 "name": local,
                 "domain": domain,
-                "enablePrefix": False,
+                "enablePrefix": bool(use_cf_prefix),
             }
         else:
-            payload = {}
+            # 公共 API 也必须带 name，否则 Worker 用随机名覆盖我们的人名前缀
+            payload = {"name": local, "enablePrefix": True}
             if domain:
                 payload["domain"] = domain
-            # 部分部署允许自定义 name
-            if _truthy_conf("cloudflare_create_with_name"):
-                payload["name"] = local
-                payload["enablePrefix"] = True
 
         create_url = base_url
         if auth_mode in ("query-key", "query", "query_key", "key") and api_key:
@@ -801,6 +835,11 @@ def create_temp_email() -> Tuple[str, str, str]:
             create_url = f"{create_url}{sep}key={api_key}"
 
         try:
+            print(
+                f"[*] 邮箱申请 local={local} domain={domain or '-'} "
+                f"path={create_path} enablePrefix={payload.get('enablePrefix')}",
+                flush=True,
+            )
             res = _do_request(
                 session,
                 use_cffi,
@@ -813,14 +852,55 @@ def create_temp_email() -> Tuple[str, str, str]:
             if res.status_code in (200, 201):
                 data = res.json()
                 jwt = data.get("jwt")
-                address = data.get("address") or (
-                    f"{local}@{domain}" if domain else ""
-                )
+                address = str(
+                    data.get("address")
+                    or (f"{local}@{domain}" if domain else "")
+                    or ""
+                ).strip()
                 password = data.get("password", "")
                 if jwt and address:
+                    # 校验返回地址是否仍含我们请求的 local（允许 PREFIX 前缀）
+                    addr_local = address.split("@", 1)[0].lower()
+                    req_local = local.lower()
+                    if "." in addr_local or "_" in addr_local:
+                        print(
+                            f"[Warn] 返回地址含 . 或 _（别名/剥字符风险）: {address}，重试",
+                            flush=True,
+                        )
+                        last_err = f"unsafe local chars in address: {address}"
+                        continue
+                    if req_local not in addr_local and not addr_local.endswith(
+                        req_local
+                    ):
+                        print(
+                            f"[Warn] 邮箱 API 未保留自定义名: requested={local} "
+                            f"got={address}（将重试；若持续发生请查 Worker "
+                            f"DISABLE_CUSTOM_ADDRESS_NAME / ADDRESS_REGEX）",
+                            flush=True,
+                        )
+                        last_err = (
+                            f"custom name not honored: want={local} got={address}"
+                        )
+                        continue
+                    # 最终地址必须像人名（允许 Worker PREFIX 前缀后仍可读）
+                    if not _looks_human_local(addr_local):
+                        print(
+                            f"[Warn] 返回 local 不像人名前缀: {address} "
+                            f"(requested={local})，重试",
+                            flush=True,
+                        )
+                        last_err = f"non-human local: {address}"
+                        continue
                     print(
                         f"[*] 邮箱创建成功: {address}"
-                        f"（domain={domain or '-'} mode={auth_mode}）"
+                        f"（requested={local} domain={domain or '-'} mode={auth_mode}）",
+                        flush=True,
+                    )
+                    # 独立一行，便于 UI 过滤规则改动后仍可检索
+                    print(
+                        f"[mail] created address={address} requested={local} "
+                        f"domain={domain or '-'} path={create_path} mode={auth_mode}",
+                        flush=True,
                     )
                     return address, password, jwt
                 last_err = f"响应缺少 jwt/address: {data}"

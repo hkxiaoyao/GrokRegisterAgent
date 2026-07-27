@@ -70,7 +70,10 @@ export interface AccountRecord {
   email: string;
   password: string;
   sso: string;
-  /** ISO 字符串 */
+  /**
+   * SSO 产出/入池时间 ISO（北京时间展示用）。
+   * 不是注册任务开跑时间；也不是 xAI 侧 createTime（见 ssoCheck.createTime）。
+   */
   createdAt: string;
   /** 最近一次 SSO 验活结果（可选，服务端持久化） */
   ssoCheck?: AccountSsoCheck;

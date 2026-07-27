@@ -48,6 +48,10 @@ def password_login_sso(
     except Exception:
         pass
     try:
+        co.auto_port()
+    except Exception:
+        pass
+    try:
         co.set_argument("--no-sandbox")
         co.set_argument("--disable-dev-shm-usage")
         co.set_argument("--disable-gpu")
@@ -71,7 +75,22 @@ def password_login_sso(
         sign_in_url = "https://accounts.x.ai/sign-in?redirect=grok-com"
         log(f"[password_login] open {sign_in_url}")
         page.get(sign_in_url)
-        time.sleep(1.0 + secrets.randbelow(40) / 100.0)
+        time.sleep(2.2 + secrets.randbelow(80) / 100.0)
+        # SPA / CF 首屏多等一会
+        for _w in range(12):
+            try:
+                ready = page.run_js(
+                    r"""
+const body = ((document.body && document.body.innerText) || '').slice(0, 200);
+const has = !!document.querySelector('input,button,a,[role=button]');
+return {has, bodyLen: body.length, href: location.href.slice(0,120)};
+"""
+                )
+                if isinstance(ready, dict) and (ready.get("has") or int(ready.get("bodyLen") or 0) > 20):
+                    break
+            except Exception:
+                pass
+            time.sleep(0.5)
 
         # 点「Login with email」类按钮（若已在邮箱表单则跳过）
         page.run_js(
@@ -101,10 +120,67 @@ if (target) { try { target.click(); } catch (e) {} return 'clicked'; }
 return 'none';
 """
         )
-        time.sleep(0.8)
+        time.sleep(1.0)
+        # 再点一次常见邮箱登录文案（Drission text）
+        clicked_email_btn = ""
+        for lab in (
+            "Log in with email",
+            "Sign in with email",
+            "Continue with email",
+            "Login with email",
+            "使用邮箱登录",
+            "使用邮箱",
+            "邮箱登录",
+        ):
+            try:
+                el = page.ele(f"text:{lab}", timeout=0.8)
+                if not el:
+                    el = page.ele(f"xpath://button[contains(normalize-space(.), '{lab}')]", timeout=0.3)
+                if not el:
+                    el = page.ele(f"xpath://*[@role='button' and contains(normalize-space(.), '{lab}')]", timeout=0.3)
+                if el:
+                    try:
+                        el.click(by_js=False)
+                    except Exception:
+                        try:
+                            el.click()
+                        except Exception:
+                            page.run_js("arguments[0].click()", el)
+                    clicked_email_btn = lab
+                    log(f"[password_login] clicked email entry: {lab!r}")
+                    time.sleep(1.2)
+                    break
+            except Exception as e:
+                log(f"[password_login] email-entry try {lab!r}: {e}")
+        if not clicked_email_btn:
+            # JS broader match (space-insensitive)
+            try:
+                js_click = page.run_js(
+                    r"""
+function vis(n){if(!n)return false;const s=getComputedStyle(n);if(s.display==='none'||s.visibility==='hidden')return false;const r=n.getBoundingClientRect();return r.width>0&&r.height>0;}
+const nodes=[...document.querySelectorAll('button,a,[role=button],div[role=button]')].filter(vis);
+const t=nodes.find(n=>{
+  const x=((n.innerText||'')+(n.getAttribute('aria-label')||'')).toLowerCase().replace(/\s+/g,'');
+  return x.includes('loginwithemail')||x.includes('signinwithemail')||x.includes('continuewithemail')
+    || (x.includes('email') && (x.includes('log')||x.includes('sign')||x.includes('continue')))
+    || x.includes('邮箱');
+});
+if(!t) return '';
+t.click();
+return (t.innerText||'').replace(/\s+/g,' ').trim().slice(0,40);
+"""
+                )
+                if js_click:
+                    clicked_email_btn = str(js_click)
+                    log(f"[password_login] js clicked email entry: {clicked_email_btn!r}")
+                    time.sleep(1.2)
+            except Exception as e:
+                log(f"[password_login] js email-entry: {e}")
 
-        # 填邮箱
-        filled = page.run_js(
+        # 填邮箱（多试几次等 SPA）
+        filled = False
+        for _try in range(8):
+            filled = page.run_js(
             r"""
 const email = arguments[0];
 function pick(sel) {
@@ -130,7 +206,27 @@ input.dispatchEvent(new Event('change', { bubbles: true }));
 return String(input.value || '') === String(email || '');
 """,
             email,
-        )
+            )
+            if filled:
+                break
+            # diagnostic once
+            if _try == 2:
+                try:
+                    diag = page.run_js(
+                        r"""
+return {
+  href: location.href.slice(0,160),
+  title: document.title||'',
+  btns: Array.from(document.querySelectorAll('button,a,[role=button]')).slice(0,15).map(n=>(n.innerText||'').replace(/\s+/g,' ').trim().slice(0,40)).filter(Boolean),
+  inputs: Array.from(document.querySelectorAll('input')).slice(0,10).map(n=>({type:n.type,name:n.name,ph:n.placeholder||'',ac:n.autocomplete||''})),
+  body: ((document.body&&document.body.innerText)||'').replace(/\s+/g,' ').trim().slice(0,180)
+};
+"""
+                    )
+                    log(f"[password_login] email-wait diag={diag}")
+                except Exception as de:
+                    log(f"[password_login] email-wait diag err={de}")
+            time.sleep(0.7)
         if not filled:
             return {"ok": False, "error": "email input not found", "email": email}
 
