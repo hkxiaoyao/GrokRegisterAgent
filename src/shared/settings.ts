@@ -102,7 +102,7 @@ export interface AppSettings {
   turnstileAutoWaitMax: number;
   /**
    * 注册轮次间隔（分钟）。
-   * 每轮成功/失败后等待再开下一轮；范围 1～30，默认 1。
+   * 0=不等待；1～29=固定分钟；30=随机 5～20 分钟。默认 1。
    * 写入 Python：register_interval_min
    */
   registerIntervalMin: number;
@@ -1324,10 +1324,10 @@ export function validateSettings(s: AppSettings): Record<string, string> {
     }
     if (
       !Number.isInteger(s.registerIntervalMin) ||
-      s.registerIntervalMin < 1 ||
+      s.registerIntervalMin < 0 ||
       s.registerIntervalMin > 30
     ) {
-      errors.registerIntervalMin = '注册间隔须在 1 到 30 分钟之间';
+      errors.registerIntervalMin = '注册间隔须在 0～30 分钟（0=不等待，30=随机 5～20 分钟）';
     }
     {
       const dMin = Number(s.autoAuthDelayMinSec);

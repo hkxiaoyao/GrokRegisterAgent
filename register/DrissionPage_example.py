@@ -3105,7 +3105,11 @@ return true;
 
 
 def _load_register_interval_min() -> int:
-    """轮次间隔（分钟），config register_interval_min / registerIntervalMin。范围 1～30，默认 1。"""
+    """轮次间隔（分钟）。
+
+    config: register_interval_min / registerIntervalMin
+    0 = 不等待；1～29 = 固定分钟；30 = 随机 5～20 分钟。默认 1。
+    """
     try:
         import json as _j
         conf_path = os.path.join(os.path.dirname(__file__), "config.json")
@@ -3119,7 +3123,24 @@ def _load_register_interval_min() -> int:
         n = int(raw) if raw is not None and str(raw).strip() != "" else 1
     except Exception:
         n = 1
-    return max(1, min(30, n))
+    return max(0, min(30, n))
+
+
+def _resolve_register_interval_sec(iv_min=None):
+    """返回 (sleep_sec, log_label)。30 = 随机 5～20 分钟。"""
+    if iv_min is None:
+        try:
+            iv_min = _load_register_interval_min()
+        except Exception:
+            iv_min = 1
+    n = max(0, min(30, int(iv_min or 0)))
+    if n <= 0:
+        return 0, "0 分钟（不等待）"
+    if n >= 30:
+        import random as _rnd
+        pick = _rnd.randint(5, 20)
+        return pick * 60, f"随机 {pick} 分钟（区间 5～20）"
+    return n * 60, f"{n} 分钟"
 
 
 def _load_turnstile_auto_wait_max() -> int:
@@ -6393,17 +6414,20 @@ def main():
                     pass
 
             if args.count == 0 or current_round < args.count:
-                # 注册间隔（分钟）：设置「注册方案 · 注册间隔」
+                # 注册间隔：0=不等待；1～29 固定分钟；30=随机 5～20 分钟
                 try:
-                    _iv_min = _load_register_interval_min()
+                    _iv_sec, _iv_label = _resolve_register_interval_sec()
                 except Exception:
-                    _iv_min = 1
-                _iv_sec = max(60, min(30 * 60, int(_iv_min) * 60))
-                print(
-                    f"[*] 注册间隔 {_iv_min} 分钟（{_iv_sec}s）后开始下一轮…",
-                    flush=True,
-                )
-                time.sleep(_iv_sec)
+                    _iv_sec, _iv_label = 60, "1 分钟"
+                if _iv_sec <= 0:
+                    print("[*] 注册间隔 0 · 立即下一轮", flush=True)
+                    time.sleep(0.5)
+                else:
+                    print(
+                        f"[*] 注册间隔 {_iv_label}（{_iv_sec}s）后开始下一轮…",
+                        flush=True,
+                    )
+                    time.sleep(_iv_sec)
 
 
     finally:

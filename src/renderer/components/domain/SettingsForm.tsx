@@ -1033,7 +1033,9 @@ export function SettingsForm() {
             const fp = draft.randomFingerprint ? '随机指纹' : '固定指纹';
             const wait = draft.turnstileAutoWaitMax ?? 60;
             const iv = draft.registerIntervalMin ?? 1;
-            return `${planText} · ${fp} · Turnstile ≤${wait}s · 间隔 ${iv}min`;
+            const ivText =
+              iv <= 0 ? '间隔 0' : iv >= 30 ? '间隔 随机5–20min' : `间隔 ${iv}min`;
+            return `${planText} · ${fp} · Turnstile ≤${wait}s · ${ivText}`;
           })()}
         />
         <CardBody className="space-y-3">
@@ -1065,14 +1067,24 @@ export function SettingsForm() {
                 <div>
                   <div className="field-label">注册间隔</div>
                   <div className="mt-1 text-[12px] text-muted-foreground">
-                    每轮结束后等待 {draft.registerIntervalMin ?? 1} 分钟再开下一轮
+                    {(draft.registerIntervalMin ?? 1) <= 0
+                      ? '0 = 不等待，立即下一轮'
+                      : (draft.registerIntervalMin ?? 1) >= 30
+                        ? '最高档 = 随机 5～20 分钟'
+                        : `每轮结束后等待 ${draft.registerIntervalMin ?? 1} 分钟再开下一轮`}
                   </div>
                 </div>
-                <span className="chip tabular-nums">{draft.registerIntervalMin ?? 1}min</span>
+                <span className="chip tabular-nums">
+                  {(draft.registerIntervalMin ?? 1) <= 0
+                    ? '0'
+                    : (draft.registerIntervalMin ?? 1) >= 30
+                      ? '随机'
+                      : `${draft.registerIntervalMin ?? 1}min`}
+                </span>
               </div>
               <div className="mt-3">
                 <Slider
-                  min={1}
+                  min={0}
                   max={30}
                   value={draft.registerIntervalMin ?? 1}
                   onValueChange={(v) => update('registerIntervalMin', v)}

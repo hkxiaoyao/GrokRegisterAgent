@@ -446,7 +446,7 @@ function merge(partial: unknown): AppSettings {
   }
   if (
     !Number.isInteger(merged.registerIntervalMin) ||
-    merged.registerIntervalMin < 1 ||
+    merged.registerIntervalMin < 0 ||
     merged.registerIntervalMin > 30
   ) {
     merged.registerIntervalMin = DEFAULT_SETTINGS.registerIntervalMin;
