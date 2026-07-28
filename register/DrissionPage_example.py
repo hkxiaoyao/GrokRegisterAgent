@@ -4988,6 +4988,14 @@ def send_chat_message(text: str | None = None, timeout: float = 20) -> bool:
     deadline = time.time() + timeout
     print(f"[*] 发送聊天消息以触发年龄门: {msg!r}")
 
+    def _on_grok_chat() -> bool:
+        """当前页面是否落在 grok.com（年龄门发消息的前提）。"""
+        try:
+            u = str(getattr(page, "url", "") or "").lower()
+        except Exception:
+            u = ""
+        return "grok.com" in u
+
     def _composer_snapshot():
         try:
             return page.run_js(
@@ -5251,6 +5259,7 @@ return false;
         except Exception:
             return False
 
+    no_input_count = 0
     while time.time() < deadline:
         try:
             refresh_active_page()
@@ -5263,6 +5272,15 @@ return false;
                 if detect_age_gate():
                     print("[*] 发消息时检测到年龄门")
                     return True
+                # 提前退出：连续找不到输入框且当前页不在 grok.com，说明注册后
+                # 没落到聊天页（如卡在 accounts.x.ai/account）。此处再等也无输入框，
+                # 空转到超时只会刷 no-input，直接放弃省 ~20s（不影响 SSO 落盘）。
+                no_input_count += 1
+                if no_input_count >= 3 and not _on_grok_chat():
+                    print(
+                        "[*] 未落到 grok.com 聊天页（输入框缺失），跳过年龄门发消息"
+                    )
+                    return False
                 print("[Debug] 发消息状态: no-input")
                 time.sleep(0.8)
                 continue
