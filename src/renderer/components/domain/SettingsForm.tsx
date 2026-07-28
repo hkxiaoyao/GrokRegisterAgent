@@ -86,13 +86,28 @@ function Field({
   label,
   hint,
   error,
-  children
+  children,
+  fill
 }: {
   label: string;
   hint?: string;
   error?: string;
   children: ReactNode;
+  /** 并排字段等高对齐：label/hint 顶部撑开、控件贴底对齐（hint 行数不同也齐） */
+  fill?: boolean;
 }) {
+  if (fill) {
+    return (
+      <div className="flex h-full flex-col gap-2">
+        <div className="flex flex-1 flex-col gap-1">
+          <label className="field-label">{label}</label>
+          {hint && <span className="field-hint">{hint}</span>}
+        </div>
+        {children}
+        {error && <p className="text-xs text-danger">{error}</p>}
+      </div>
+    );
+  }
   return (
     <div className="space-y-2">
       <div className="flex flex-col gap-1">
@@ -1218,6 +1233,7 @@ export function SettingsForm() {
             <div className="field-label mb-2">运行参数</div>
             <div className="grid gap-3 sm:grid-cols-2">
               <Field
+                fill
                 label="每 N 成功重启浏览器"
                 hint="仅控制进程回收（防长跑内存泄漏）；0=仅失败/首轮强制重启，默认 5。指纹已改为每号独立（含 canvas/audio），与此值无关"
               >
@@ -1238,6 +1254,7 @@ export function SettingsForm() {
                 />
               </Field>
               <Field
+                fill
                 label="收码失败换邮箱次数"
                 hint="验证码超时/邮箱失败时换邮箱重试上限，默认 3"
               >
