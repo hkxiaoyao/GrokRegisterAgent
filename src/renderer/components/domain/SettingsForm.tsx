@@ -508,7 +508,7 @@ export function SettingsForm() {
             </select>
           </Field>
           {/* 连接：API + 密码 并排 */}
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
             <Field
               label="API 地址"
               hint={
@@ -997,7 +997,7 @@ export function SettingsForm() {
         </CardBody>
       </Card>
 
-            <Card collapsible defaultCollapsed>
+      <Card collapsible defaultCollapsed>
         <CardHeader
           title="注册方案"
           right={<CardHeaderIcon icon={Layers} title="注册方案" />}
@@ -1019,7 +1019,7 @@ export function SettingsForm() {
             return `${planText} · ${fp} · Turnstile ≤${wait}s`;
           })()}
         />
-        <CardBody className="space-y-3">
+        <CardBody className="space-y-4">
           <div className="rounded-xl bg-muted/70 p-4">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -1216,7 +1216,7 @@ export function SettingsForm() {
         </CardBody>
       </Card>
 
-<Card collapsible defaultCollapsed>
+      <Card collapsible defaultCollapsed>
         <CardHeader
           title="授权管理"
           description={(() => {
@@ -1524,7 +1524,7 @@ export function SettingsForm() {
         </CardBody>
       </Card>
 
-<Card collapsible defaultCollapsed>
+      <Card collapsible defaultCollapsed>
         <CardHeader
           title="推送设置"
           description={(() => {
