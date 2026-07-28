@@ -242,7 +242,7 @@ export interface AppSettings {
   autoAuthDelayMinSec: number;
   /** 延迟上限（秒）。默认 120。 */
   autoAuthDelayMaxSec: number;
-  /** 授权队列 worker 数（1～8，默认 2） */
+  /** 授权队列 worker 数（1～8，默认 1） */
   authExportWorkers: number;
   /**
    * 授权队列上限；0=2×workers；硬上限 999。满则入队阻塞/背压。

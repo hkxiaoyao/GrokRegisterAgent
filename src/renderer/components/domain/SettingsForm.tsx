@@ -4,7 +4,6 @@ import {
   ChevronDown,
   ChevronRight,
   Clipboard,
-  Github,
   KeyRound,
   Layers,
   Loader2,
@@ -31,7 +30,6 @@ import type {
   CpaMintMode,
   MailProvider,
   PoolMode,
-  RegisterMode,
   RegisterPlanId
 } from '@shared/settings';
 import {
@@ -83,21 +81,6 @@ const TEXTAREA_CLASS =
 
 const SELECT_CLASS =
   'flex h-11 w-full rounded-[12px] border border-input bg-muted/60 px-3.5 py-2 text-[15px] tracking-[-0.01em] transition-colors focus-visible:border-primary/40 focus-visible:bg-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/30 disabled:cursor-not-allowed disabled:opacity-50';
-
-function RepoLink({ href, label }: { href: string; label: string }) {
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noreferrer"
-      className="inline-flex shrink-0 items-center gap-1 rounded-full bg-muted px-2.5 py-1 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-      title={href}
-    >
-      <Github className="h-3 w-3" />
-      {label}
-    </a>
-  );
-}
 
 function Field({
   label,
@@ -494,7 +477,8 @@ export function SettingsForm() {
         <CardBody className="space-y-4">
           {(() => {
             const provider = draft.mailProvider || 'cloudflare';
-            const isCloudflare = provider === 'cloudflare' || !provider;
+            // provider 已经 || 'cloudflare' 兜底，恒非空
+            const isCloudflare = provider === 'cloudflare';
             return (
               <>
           <Field
@@ -1269,7 +1253,7 @@ export function SettingsForm() {
             </div>
             <Field
               label="CPA Mint 模式"
-              hint="A=PKCE；B=Device；C=double 各出一份并分别测活。mint 后无 grok-4.5 不进 CPA。PKCE 失败会自动 device 兜底"
+              hint="A=PKCE；B=Device；C=double 各出一份并分别测活。mint 后无 grok-4.5 不进 CPA。默认 PKCE 失败不降级 device（device 易假活）"
             >
               <select
                 className={SELECT_CLASS}
