@@ -55,7 +55,8 @@ function normalizeSettingsDraft(raw: AppSettings | null | undefined): AppSetting
     mail: {
       apiBase: String(mailIn.apiBase ?? DEFAULT_SETTINGS.mail.apiBase ?? ''),
       adminAuth: String(mailIn.adminAuth ?? DEFAULT_SETTINGS.mail.adminAuth ?? ''),
-      domain: String(mailIn.domain ?? DEFAULT_SETTINGS.mail.domain ?? '')
+      domain: String(mailIn.domain ?? DEFAULT_SETTINGS.mail.domain ?? ''),
+      useProxy: mailIn.useProxy === true
     },
     proxy: '',
     proxyPool: '',
@@ -684,6 +685,12 @@ export function SettingsForm() {
               </>
             );
           })()}
+          <ToggleRow
+            label="邮件 API 走代理"
+            hint="默认关：临时邮箱后端在代理出口下常被连接重置（curl 35 Recv failure）。邮箱申请与注册无需同出口，直连更稳。开启则邮件请求也走当前代理。"
+            checked={draft.mail?.useProxy === true}
+            onChange={(v) => updateMail('useProxy', v)}
+          />
         </CardBody>
       </Card>
 

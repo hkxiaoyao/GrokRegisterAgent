@@ -9,6 +9,12 @@ export interface MailSettings {
   adminAuth: string;
   /** 邮件域名后缀，例如 example.com（单域名；可与 mailDomains 池并存） */
   domain: string;
+  /**
+   * 调用邮件后端 API 时是否走注册代理（sing-box/自定义 proxy）。
+   * 默认 false：邮件 API 直连。邮件后端常与 Grok 不同网络域，
+   * 走代理反而易被目标站/代理链 reset（curl 35 Recv failure）。
+   */
+  useProxy?: boolean;
 }
 
 export type ThemeMode = 'system' | 'light' | 'dark';
@@ -429,7 +435,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   mail: {
     apiBase: '',
     adminAuth: '',
-    domain: ''
+    domain: '',
+    useProxy: false
   },
   mailProvider: 'cloudflare',
   mailDomains: '',

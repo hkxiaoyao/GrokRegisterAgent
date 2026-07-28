@@ -196,6 +196,9 @@ function writeConfigForPythonLocked(
   config.mail_domain = String(settings.mail?.domain || '')
     .trim()
     .replace(/^@+/, '');
+  // 邮件 API 是否走代理（默认 false）。sing-box 代理常把 mail worker 请求 reset（curl 35），
+  // 关掉后邮件 API 直连、仅浏览器/注册流量走代理。
+  config.mail_api_use_proxy = settings.mail?.useProxy === true;
 
   // 邮箱提供方：cloudflare | duckmail | yyds
   const mailProvider = String(

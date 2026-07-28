@@ -51,7 +51,7 @@ def _normalize_mail_api_base(raw: str) -> str:
 
 def _reload_mail_conf() -> None:
     """每轮创建前热读 config.json，避免进程内常量过期。"""
-    global _conf, MAIL_API_BASE, MAIL_ADMIN_AUTH, MAIL_DOMAIN, PROXY
+    global _conf, MAIL_API_BASE, MAIL_ADMIN_AUTH, MAIL_DOMAIN, PROXY, MAIL_API_USE_PROXY
     try:
         if _config_path.exists():
             with _config_path.open("r", encoding="utf-8") as f:
@@ -62,12 +62,16 @@ def _reload_mail_conf() -> None:
     MAIL_ADMIN_AUTH = str(_conf.get("mail_admin_auth", "") or "")
     MAIL_DOMAIN = str(_conf.get("mail_domain", "") or "").strip().lstrip("@")
     PROXY = str(_conf.get("proxy", "") or "")
+    MAIL_API_USE_PROXY = bool(_conf.get("mail_api_use_proxy", False))
 
 
 MAIL_API_BASE = _normalize_mail_api_base(str(_conf.get("mail_api_base", "")))
 MAIL_ADMIN_AUTH = str(_conf.get("mail_admin_auth", ""))
 MAIL_DOMAIN = str(_conf.get("mail_domain", "")).strip().lstrip("@")
 PROXY = str(_conf.get("proxy", ""))
+# 邮件 API 是否走代理（默认 False）。默认关：多数临时邮箱后端在代理出口下
+# 常被连接重置（curl 35 Recv failure），且邮箱申请无需与注册同出口。
+MAIL_API_USE_PROXY = bool(_conf.get("mail_api_use_proxy", False))
 
 # 邮箱域名池（可选）；轮换逻辑见 pools.next_mail_domain
 try:
@@ -545,7 +549,7 @@ def _create_session():
             "Accept": "application/json",
             "Content-Type": "application/json",
         })
-        if PROXY:
+        if PROXY and MAIL_API_USE_PROXY:
             session.proxies = {"http": PROXY, "https": PROXY}
         return session, True
 
@@ -561,7 +565,7 @@ def _create_session():
         "Accept": "application/json",
         "Content-Type": "application/json",
     })
-    if PROXY:
+    if PROXY and MAIL_API_USE_PROXY:
         s.proxies = {"http": PROXY, "https": PROXY}
     return s, False
 
