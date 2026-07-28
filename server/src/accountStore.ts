@@ -30,6 +30,60 @@ function ssoDir(): string {
   return join(dataDir(), 'sso');
 }
 
+/**
+ * 删除墓碑：记录被用户手动删除的 SSO 值。
+ *
+ * 背景：deleteAccounts 只改 accounts.json，不删 /data/sso 下的历史 txt；
+ * 而 readAll() 每次都会 importFromSsoFiles 把 txt 重新导入 —— 导致删除后
+ * 刷新账号又「复活」。墓碑让 import 跳过已删 SSO，不动历史文件，可逆。
+ */
+function tombstonePath(): string {
+  return join(accountsDir(), 'accounts_deleted.json');
+}
+
+async function readTombstones(): Promise<Set<string>> {
+  const path = tombstonePath();
+  if (!existsSync(path)) return new Set();
+  try {
+    const parsed = JSON.parse(await fsp.readFile(path, 'utf-8'));
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.map((x) => String(x || '').trim()).filter(Boolean));
+    }
+  } catch {
+    /* 坏文件视作空墓碑 */
+  }
+  return new Set();
+}
+
+async function addTombstones(ssos: string[]): Promise<void> {
+  const incoming = ssos.map((x) => String(x || '').trim()).filter(Boolean);
+  if (incoming.length === 0) return;
+  const cur = await readTombstones();
+  for (const s of incoming) cur.add(s);
+  const dir = accountsDir();
+  await ensureDir(dir);
+  const path = tombstonePath();
+  const tmp = `${path}.tmp`;
+  await fsp.writeFile(tmp, JSON.stringify([...cur], null, 2), 'utf-8');
+  await fsp.rename(tmp, path);
+}
+
+/** 从墓碑移除（重新导入/粘贴同一 SSO 时，用户显式想找回）。 */
+async function removeTombstones(ssos: string[]): Promise<void> {
+  const drop = new Set(ssos.map((x) => String(x || '').trim()).filter(Boolean));
+  if (drop.size === 0) return;
+  const cur = await readTombstones();
+  let changed = false;
+  for (const s of drop) {
+    if (cur.delete(s)) changed = true;
+  }
+  if (!changed) return;
+  const path = tombstonePath();
+  const tmp = `${path}.tmp`;
+  await fsp.writeFile(tmp, JSON.stringify([...cur], null, 2), 'utf-8');
+  await fsp.rename(tmp, path);
+}
+
 function isAccountSsoCheck(v: unknown): v is AccountSsoCheck {
   if (!v || typeof v !== 'object') return false;
   const o = v as Record<string, unknown>;
@@ -200,7 +254,10 @@ export function repairAccountFields(a: AccountRecord): AccountRecord {
   return a;
 }
 
-function importFromSsoFiles(existing: AccountRecord[]): AccountRecord[] {
+function importFromSsoFiles(
+  existing: AccountRecord[],
+  tombstones: Set<string> = new Set()
+): AccountRecord[] {
   const dir = ssoDir();
   if (!existsSync(dir)) return existing;
 
@@ -232,6 +289,8 @@ function importFromSsoFiles(existing: AccountRecord[]): AccountRecord[] {
     lines.forEach((line, idx) => {
       const rec = parseHistoryLine(line, file, idx);
       if (!rec) return;
+      // 用户已手动删除的 SSO：不从历史 txt 复活
+      if (rec.sso && tombstones.has(rec.sso.trim())) return;
       if (rec.sso && seenSso.has(rec.sso)) return;
       const key = `${rec.email}----${rec.password}----${rec.sso}`;
       if (rec.email && seenKey.has(key)) return;
@@ -260,7 +319,9 @@ async function readAll(): Promise<AccountRecord[]> {
   all = await migrateLegacyIfNeeded(all);
 
   // 若库空或明显少于历史 sso 文件可恢复项，尝试从 /data/sso 导入
-  const merged = importFromSsoFiles(all);
+  // 跳过墓碑（已被用户删除的 SSO），避免删除后刷新又复活
+  const tombstones = await readTombstones();
+  const merged = importFromSsoFiles(all, tombstones);
   if (merged.length > all.length) {
     const gained = merged.length - all.length;
     await writeAll(merged);
@@ -422,10 +483,13 @@ export async function deleteAccounts(
     return { deleted: 0, requested: 0, remaining: (await listAccounts()).length };
   }
   const all = await readAll();
+  const removed = all.filter((a) => idSet.has(a.id));
   const next = all.filter((a) => !idSet.has(a.id));
   const deleted = all.length - next.length;
   if (deleted > 0) {
     await writeAll(next);
+    // 记墓碑：阻止 importFromSsoFiles 从残留 txt 把已删账号重新导入（复活）。
+    await addTombstones(removed.map((a) => a.sso).filter(Boolean));
   }
   return { deleted, requested: idSet.size, remaining: next.length };
 }
@@ -511,6 +575,8 @@ export async function importAccountsFromText(input: {
     imported++;
   }
   if (imported > 0) {
+    // 显式导入 = 用户想找回：从墓碑移除这些 SSO，否则下次 importFromSsoFiles 又被跳过
+    await removeTombstones(candidates.map((c) => c.sso));
     await writeAll(all);
   }
   return {
@@ -528,7 +594,8 @@ export async function resyncAccountsFromDisk(): Promise<{ total: number; importe
   const before = await readJsonAccounts(accountsPath());
   let all = await migrateLegacyIfNeeded(before);
   const beforeCount = all.length;
-  all = importFromSsoFiles(all);
+  const tombstones = await readTombstones();
+  all = importFromSsoFiles(all, tombstones);
   if (all.length !== beforeCount) {
     await writeAll(all);
   }

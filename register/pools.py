@@ -27,6 +27,10 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 _lock = threading.Lock()
+# 跨进程写 config.json 的文件锁：Node（writeConfigForPython）与本进程
+# （remove_proxy_from_local_pool）会并发写同一文件。共用 config.json.lock，
+# 通过 O_CREAT|O_EXCL 自旋获取，避免半写文件与互相覆盖。
+_config_lock = threading.Lock()
 _proxy_list: List[str] = []
 _domain_list: List[str] = []
 _proxy_mode = "round_robin"
@@ -42,6 +46,82 @@ _proxy_last_used: Dict[str, float] = {}
 
 def _config_path() -> Path:
     return Path(__file__).resolve().parent / "config.json"
+
+
+class _CrossProcConfigLock:
+    """基于 O_CREAT|O_EXCL 的跨进程锁（Node 侧用同名 .lock 协调）。
+
+    锁文件：config.json.lock。获取失败自旋等待（含线程内 _config_lock 保证
+    单进程互斥）。超时后强制放行——宁可偶发覆盖也不永久卡死注册流程。
+    过期锁（陈旧 > stale_sec）视为崩溃残留，直接接管。
+    """
+
+    def __init__(self, timeout: float = 5.0, stale_sec: float = 30.0):
+        self._path = str(_config_path()) + ".lock"
+        self._timeout = timeout
+        self._stale_sec = stale_sec
+        self._fd = None
+
+    def __enter__(self):
+        _config_lock.acquire()
+        deadline = time.time() + self._timeout
+        while True:
+            try:
+                self._fd = os.open(
+                    self._path, os.O_CREAT | os.O_EXCL | os.O_WRONLY
+                )
+                try:
+                    os.write(self._fd, str(os.getpid()).encode("ascii", "replace"))
+                except Exception:
+                    pass
+                return self
+            except FileExistsError:
+                # 陈旧锁（进程崩溃残留）直接清掉
+                try:
+                    st = os.stat(self._path)
+                    if time.time() - st.st_mtime > self._stale_sec:
+                        os.unlink(self._path)
+                        continue
+                except FileNotFoundError:
+                    continue
+                except Exception:
+                    pass
+                if time.time() >= deadline:
+                    # 超时放行：不持文件锁，仅靠原子写降低损坏面
+                    self._fd = None
+                    return self
+                time.sleep(0.05)
+            except Exception:
+                # 无法用文件锁（如平台异常）：放行，仍走原子写
+                self._fd = None
+                return self
+
+    def __exit__(self, *exc):
+        try:
+            if self._fd is not None:
+                os.close(self._fd)
+                os.unlink(self._path)
+        except Exception:
+            pass
+        finally:
+            self._fd = None
+            _config_lock.release()
+        return False
+
+
+def _atomic_write_config(conf: dict) -> None:
+    """原子写 config.json：写临时文件后 os.replace，避免读到半写内容。"""
+    path = _config_path()
+    tmp = str(path) + f".tmp.{os.getpid()}"
+    data = json.dumps(conf, ensure_ascii=False, indent=2)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(data)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except Exception:
+            pass
+    os.replace(tmp, str(path))
 
 
 _HOST_PORT_RE = re.compile(
@@ -209,39 +289,39 @@ def remove_proxy_from_local_pool(proxy: str) -> int:
             except Exception:
                 pass
     if removed:
-        # 同步改写 register/config.json 的 proxy_pool，避免 force reload 又读回死代理
+        # 同步改写 register/config.json 的 proxy_pool，避免 force reload 又读回死代理。
+        # Node（writeConfigForPython）与其它注册子进程会并发写同一文件，故：
+        # 持跨进程文件锁 → 锁内 read-modify-write → 原子替换，杜绝半写/互相覆盖。
         try:
             path = _config_path()
-            if path.is_file():
-                conf = json.loads(path.read_text(encoding="utf-8"))
-                pool = conf.get("proxy_pool") or conf.get("proxies")
-                if isinstance(pool, list):
-                    conf["proxy_pool"] = [
-                        x
-                        for x in pool
-                        if proxy_identity_key(str(x or "")) != key
-                    ]
-                    path.write_text(
-                        json.dumps(conf, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-                elif isinstance(pool, str) and pool.strip():
-                    lines = []
-                    for ln in pool.replace("\r\n", "\n").split("\n"):
-                        raw = ln.strip()
-                        if not raw or raw.startswith("#"):
+            with _CrossProcConfigLock():
+                if path.is_file():
+                    conf = json.loads(path.read_text(encoding="utf-8"))
+                    pool = conf.get("proxy_pool") or conf.get("proxies")
+                    changed = False
+                    if isinstance(pool, list):
+                        conf["proxy_pool"] = [
+                            x
+                            for x in pool
+                            if proxy_identity_key(str(x or "")) != key
+                        ]
+                        changed = True
+                    elif isinstance(pool, str) and pool.strip():
+                        lines = []
+                        for ln in pool.replace("\r\n", "\n").split("\n"):
+                            raw = ln.strip()
+                            if not raw or raw.startswith("#"):
+                                lines.append(ln)
+                                continue
+                            if proxy_identity_key(raw) == key:
+                                continue
                             lines.append(ln)
-                            continue
-                        if proxy_identity_key(raw) == key:
-                            continue
-                        lines.append(ln)
-                    conf["proxy_pool"] = "\n".join(lines)
-                    path.write_text(
-                        json.dumps(conf, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
-        except Exception:
-            pass
+                        conf["proxy_pool"] = "\n".join(lines)
+                        changed = True
+                    if changed:
+                        _atomic_write_config(conf)
+        except Exception as e:
+            print(f"[Warn] 写 config.json 剔除死代理失败: {e}", flush=True)
     return removed
 
 

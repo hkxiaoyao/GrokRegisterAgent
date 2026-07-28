@@ -11,6 +11,66 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const REGISTER_SCRIPT_NAMES = ['runner.py', 'DrissionPage_example.py'] as const;
 
+/**
+ * 跨进程写 config.json 的文件锁：与 Python pools.py 的 _CrossProcConfigLock
+ * 共用同名 config.json.lock，通过 O_CREAT|O_EXCL 自旋获取，避免半写文件与
+ * 互相覆盖。超时放行（宁可偶发覆盖也不卡死）；陈旧锁（崩溃残留）直接接管。
+ */
+function acquireConfigLock(configPath: string, timeoutMs = 5000, staleMs = 30000): number | null {
+  const lockPath = `${configPath}.lock`;
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      const fd = fs.openSync(lockPath, 'wx');
+      try {
+        fs.writeSync(fd, String(process.pid));
+      } catch {
+        /* pid 写失败不影响锁语义 */
+      }
+      return fd;
+    } catch (err: any) {
+      if (err?.code !== 'EEXIST') {
+        // 平台异常等：放行，仅靠原子写降低损坏面
+        return null;
+      }
+      try {
+        const st = fs.statSync(lockPath);
+        if (Date.now() - st.mtimeMs > staleMs) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        // 锁刚被释放：重试获取
+        continue;
+      }
+      if (Date.now() >= deadline) return null;
+      // 忙等一小段（Node 无 sleep，用 Atomics 阻塞当前线程）
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+}
+
+function releaseConfigLock(configPath: string, fd: number | null): void {
+  if (fd === null) return;
+  try {
+    fs.closeSync(fd);
+  } catch {
+    /* ignore */
+  }
+  try {
+    fs.unlinkSync(`${configPath}.lock`);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 原子写 config.json：写临时文件后 rename，避免读者读到半写内容。 */
+function atomicWriteConfig(configPath: string, config: unknown): void {
+  const tmp = `${configPath}.tmp.${process.pid}`;
+  fs.writeFileSync(tmp, JSON.stringify(config, null, 2), 'utf-8');
+  fs.renameSync(tmp, configPath);
+}
+
 type RuntimeSettings = Partial<AppSettings>;
 
 export interface RegisterRuntime {
@@ -98,6 +158,22 @@ export function resolveRegisterRuntime(settings: RuntimeSettings = {}): Register
 
 export function writeConfigForPython(registerDir: string, settings: RuntimeSettings, count?: number) {
   const configPath = path.join(registerDir, 'config.json');
+  // 持跨进程锁完成 read-modify-write：与 Python pools.py 并发写 config.json 时
+  // 避免读到半写文件或互相覆盖。
+  const lockFd = acquireConfigLock(configPath);
+  try {
+    writeConfigForPythonLocked(registerDir, configPath, settings, count);
+  } finally {
+    releaseConfigLock(configPath, lockFd);
+  }
+}
+
+function writeConfigForPythonLocked(
+  registerDir: string,
+  configPath: string,
+  settings: RuntimeSettings,
+  count?: number
+) {
   let config: Record<string, any> = {};
 
   try {
@@ -592,5 +668,5 @@ export function writeConfigForPython(registerDir: string, settings: RuntimeSetti
   if (ycKey) config.yescaptcha_key = ycKey;
   else delete config.yescaptcha_key;
 
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
+  atomicWriteConfig(configPath, config);
 }
