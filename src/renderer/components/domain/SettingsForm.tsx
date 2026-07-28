@@ -1095,6 +1095,37 @@ export function SettingsForm() {
               )}
             </div>
           </div>
+          {draft.singBoxEnabled === true && (
+            <div className="rounded-xl bg-muted/70 p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="field-label">同出口 IP 冷却</div>
+                  <div className="mt-1 text-[12px] text-muted-foreground">
+                    {(draft.proxyIpIntervalSec ?? 0) <= 0
+                      ? '0 = 不限制，出口随机轮换即可'
+                      : `同一出口 IP 两次注册至少间隔 ${draft.proxyIpIntervalSec ?? 0} 秒，降低同 IP 连点风控`}
+                  </div>
+                </div>
+                <span className="chip tabular-nums">
+                  {(draft.proxyIpIntervalSec ?? 0) <= 0
+                    ? '关'
+                    : `${draft.proxyIpIntervalSec ?? 0}s`}
+                </span>
+              </div>
+              <div className="mt-3">
+                <Slider
+                  min={0}
+                  max={1800}
+                  step={30}
+                  value={draft.proxyIpIntervalSec ?? 0}
+                  onValueChange={(v) => update('proxyIpIntervalSec', v)}
+                />
+              </div>
+              <p className="mt-2 text-[11px] text-muted-foreground">
+                仅 sing-box 节点池模式生效；直连 / 单代理下强制 0（无出口轮换，冷却只会拖慢）。
+              </p>
+            </div>
+          )}
           <ToggleRow
             label="随机注册特征"
             hint="UA / 语言 / 时区 / 分辨率等指纹随机化"

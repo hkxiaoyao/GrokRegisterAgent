@@ -421,10 +421,13 @@ function RuntimeSettingsInline() {
       </div>
       {open ? (
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
+        <div className="flex flex-col rounded-xl border border-border/60 bg-muted/50 p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="field-label">轮数（每路）</div>
             <span className="chip tabular-nums">{draft.runCount}</span>
+          </div>
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            每路循环注册 {draft.runCount} 轮
           </div>
           <div className="mt-2">
             <Slider
@@ -435,7 +438,7 @@ function RuntimeSettingsInline() {
             />
           </div>
         </div>
-        <div className="rounded-xl border border-border/60 bg-muted/50 p-3">
+        <div className="flex flex-col rounded-xl border border-border/60 bg-muted/50 p-3">
           <div className="flex items-center justify-between gap-2">
             <div className="field-label">注册间隔</div>
             <span className="chip tabular-nums">

@@ -295,10 +295,13 @@ function writeConfigForPythonLocked(
       ? true
       : settings.proxyPreferLocalForward === true;
 
-  // 同一 IP 注册间隔（秒）；0=不限制
+  // 同一出口注册间隔（秒）；0=不限制。仅 sing-box 节点池模式生效：
+  // 直连/单代理下没有出口轮换，冷却只会白拖慢注册，故强制 0。
   const ipInterval = Number(settings.proxyIpIntervalSec);
   config.proxy_ip_interval_sec =
-    Number.isFinite(ipInterval) && ipInterval > 0 ? Math.min(Math.floor(ipInterval), 86400) : 0;
+    settings.singBoxEnabled === true && Number.isFinite(ipInterval) && ipInterval > 0
+      ? Math.min(Math.floor(ipInterval), 86400)
+      : 0;
 
   config.random_fingerprint =
     settings.randomFingerprint === undefined ? true : !!settings.randomFingerprint;
