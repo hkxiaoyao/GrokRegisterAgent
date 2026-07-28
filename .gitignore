@@ -59,3 +59,6 @@ register/_*.bak
 # local test cache
 .pytest_cache/
 
+# 本地测试目录（测试用 config 备份、测试产出的 SSO 等）— 不推远端
+register/_localtest/
+
