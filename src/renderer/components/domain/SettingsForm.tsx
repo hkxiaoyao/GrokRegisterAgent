@@ -176,6 +176,13 @@ function PoolModeSelect({
   );
 }
 
+/** 冷却时长：<60s 显示秒，≥60s 折算分钟（整分去小数，半分留一位） */
+function formatCooldown(sec: number): string {
+  if (sec < 60) return `${sec}s`;
+  const min = sec / 60;
+  return Number.isInteger(min) ? `${min}min` : `${min.toFixed(1)}min`;
+}
+
 export function SettingsForm() {
   const data = useSettingsStore((s) => s.data);
   const reload = useSettingsStore((s) => s.reload);
@@ -1065,13 +1072,13 @@ export function SettingsForm() {
                   <div className="mt-1 text-[12px] text-muted-foreground">
                     {(draft.proxyIpIntervalSec ?? 0) <= 0
                       ? '0 = 不限制，出口随机轮换即可'
-                      : `同一出口 IP 两次注册至少间隔 ${draft.proxyIpIntervalSec ?? 0} 秒，降低同 IP 连点风控`}
+                      : `同一出口 IP 两次注册至少间隔 ${formatCooldown(draft.proxyIpIntervalSec ?? 0)}，降低同 IP 连点风控`}
                   </div>
                 </div>
                 <span className="chip tabular-nums">
                   {(draft.proxyIpIntervalSec ?? 0) <= 0
                     ? '关'
-                    : `${draft.proxyIpIntervalSec ?? 0}s`}
+                    : formatCooldown(draft.proxyIpIntervalSec ?? 0)}
                 </span>
               </div>
               <div className="mt-3">
