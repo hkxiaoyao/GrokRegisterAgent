@@ -1213,6 +1213,52 @@ export function SettingsForm() {
               </div>
             )}
           </div>
+          {/* 运行参数：长跑进程回收 / 收码换邮箱重试（属注册流程） */}
+          <div className="rounded-xl border border-border/60 bg-card/40 p-3">
+            <div className="field-label mb-2">运行参数</div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field
+                label="每 N 成功重启浏览器"
+                hint="仅控制进程回收（防长跑内存泄漏）；0=仅失败/首轮强制重启，默认 5。指纹已改为每号独立（含 canvas/audio），与此值无关"
+              >
+                <Input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={draft.browserRecycleEvery ?? 5}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    update(
+                      'browserRecycleEvery',
+                      Number.isFinite(n)
+                        ? Math.max(0, Math.min(100, Math.floor(n)))
+                        : 5
+                    );
+                  }}
+                />
+              </Field>
+              <Field
+                label="收码失败换邮箱次数"
+                hint="验证码超时/邮箱失败时换邮箱重试上限，默认 3"
+              >
+                <Input
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={draft.maxMailRetry ?? 3}
+                  onChange={(e) => {
+                    const n = Number(e.target.value);
+                    update(
+                      'maxMailRetry',
+                      Number.isFinite(n)
+                        ? Math.max(1, Math.min(10, Math.floor(n)))
+                        : 3
+                    );
+                  }}
+                />
+              </Field>
+            </div>
+          </div>
         </CardBody>
       </Card>
 
@@ -1470,55 +1516,6 @@ export function SettingsForm() {
                 checked={!!draft.sub2apiExportEnabled}
                 onChange={(v) => update('sub2apiExportEnabled', v)}
               />
-            </div>
-          </div>
-
-          {/* ⑤ 注册运行参数（与 Auth 流水线相关的长跑/收码） */}
-          <div className="space-y-3 border-t border-border/50 pt-3">
-            <div className="text-[12px] font-semibold tracking-tight text-muted-foreground">
-              ⑤ 注册运行
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field
-                label="每 N 成功重启浏览器"
-                hint="仅控制进程回收（防长跑内存泄漏）；0=仅失败/首轮强制重启，默认 5。指纹已改为每号独立（含 canvas/audio），与此值无关"
-              >
-                <Input
-                  type="number"
-                  min={0}
-                  max={100}
-                  value={draft.browserRecycleEvery ?? 5}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    update(
-                      'browserRecycleEvery',
-                      Number.isFinite(n)
-                        ? Math.max(0, Math.min(100, Math.floor(n)))
-                        : 5
-                    );
-                  }}
-                />
-              </Field>
-              <Field
-                label="收码失败换邮箱次数"
-                hint="验证码超时/邮箱失败时换邮箱重试上限，默认 3"
-              >
-                <Input
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={draft.maxMailRetry ?? 3}
-                  onChange={(e) => {
-                    const n = Number(e.target.value);
-                    update(
-                      'maxMailRetry',
-                      Number.isFinite(n)
-                        ? Math.max(1, Math.min(10, Math.floor(n)))
-                        : 3
-                    );
-                  }}
-                />
-              </Field>
             </div>
           </div>
         </CardBody>
