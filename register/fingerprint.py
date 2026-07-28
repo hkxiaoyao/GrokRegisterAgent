@@ -32,6 +32,9 @@ class BrowserFingerprint:
     # WebGL 伪装（stealth 用；无保证）
     webgl_vendor: str = "Google Inc. (NVIDIA)"
     webgl_renderer: str = "ANGLE (NVIDIA, NVIDIA GeForce GTX 1660 Direct3D11 vs_5_0 ps_5_0, D3D11)"
+    # 逐号 canvas/audio 噪声种子（64-bit 无符号）。同一号内固定→canvas 自洽；
+    # 号与号不同→打散「同机连续号 canvas/audio 哈希一致」这一强关联簇 key。
+    noise_seed: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -286,6 +289,8 @@ def build_fingerprint(
         window_h=h,
         webgl_vendor=wv,
         webgl_renderer=wr,
+        # 噪声种子始终独立随机（即便复现 seed 也要每号不同的 canvas/audio）
+        noise_seed=secrets.randbits(64),
     )
 
 
@@ -309,6 +314,7 @@ def apply_to_chromium_options(co: Any, fp: BrowserFingerprint) -> None:
 def stealth_js(fp: BrowserFingerprint) -> str:
     """返回注入页面的 stealth JS（有限规避，无法改服务端 bot_flag_source）。"""
     langs_js = json_dumps(fp.languages)
+    noise_seed = int(getattr(fp, "noise_seed", 0) or 0) & 0xFFFFFFFF
     return f"""
 (() => {{
   try {{
@@ -391,6 +397,104 @@ def stealth_js(fp: BrowserFingerprint) -> str:
     }};
     clean(window);
     clean(document);
+  }} catch (e) {{}}
+  // ── 逐号 canvas / audio 噪声 ──────────────────────────────────────
+  // 目的：同机连续注册时，canvas/audio 哈希天生逐号相同，是风控把同批号
+  // 聚成一簇的强 key。这里按 noise_seed 注入人眼/人耳不可感的微扰，使每号
+  // 哈希不同、单号内自洽。不撒类别谎（不同于 WebGL vendor 伪装），隐私插件
+  // 亦用此法，Turnstile 无外部真值可交叉校验，故安全。
+  try {{
+    const SEED = {noise_seed} >>> 0;
+    if (SEED) {{
+      // mulberry32：确定性 PRNG，同 seed → 同噪声序列 → 单号内 canvas 自洽
+      const mkRand = (s) => {{
+        let a = (s >>> 0) || 1;
+        return () => {{
+          a |= 0; a = (a + 0x6D2B79F5) | 0;
+          let t = Math.imul(a ^ (a >>> 15), 1 | a);
+          t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+          return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+        }};
+      }};
+      // Canvas：对 getImageData 的像素做 ±1 微扰（逐 seed 固定偏移图案）
+      try {{
+        const proto = CanvasRenderingContext2D && CanvasRenderingContext2D.prototype;
+        if (proto && proto.getImageData) {{
+          const origGID = proto.getImageData;
+          proto.getImageData = function () {{
+            const img = origGID.apply(this, arguments);
+            try {{
+              const r = mkRand(SEED);
+              const d = img.data;
+              // 稀疏扰动：约 1/13 采样点 ±1，足以改哈希、不改视觉
+              for (let i = 0; i < d.length; i += 4) {{
+                if (r() < 0.08) {{
+                  const dv = r() < 0.5 ? -1 : 1;
+                  d[i] = Math.max(0, Math.min(255, d[i] + dv));
+                  d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + dv));
+                  d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + dv));
+                }}
+              }}
+            }} catch (e) {{}}
+            return img;
+          }};
+        }}
+      }} catch (e) {{}}
+      // Canvas：toDataURL / toBlob 走上面被 hook 的读路径即可，
+      // 但部分实现直读底层缓冲，故对 HTMLCanvasElement 亦做一层包裹。
+      try {{
+        const cproto = HTMLCanvasElement && HTMLCanvasElement.prototype;
+        if (cproto && cproto.toDataURL) {{
+          const origTDU = cproto.toDataURL;
+          cproto.toDataURL = function () {{
+            try {{
+              const ctx = this.getContext && this.getContext('2d');
+              if (ctx && this.width && this.height) {{
+                const r = mkRand(SEED ^ 0x9E3779B9);
+                // 在右下角落一个 alpha=254/255 的近乎透明微点，扰动最终哈希
+                const x = this.width - 1, y = this.height - 1;
+                const px = ctx.getImageData(x, y, 1, 1);
+                px.data[3] = px.data[3] > 0 ? px.data[3] - (r() < 0.5 ? 0 : 1) : px.data[3];
+                ctx.putImageData(px, x, y);
+              }}
+            }} catch (e) {{}}
+            return origTDU.apply(this, arguments);
+          }};
+        }}
+      }} catch (e) {{}}
+      // Audio：对 getChannelData / getFloatFrequencyData 加极小噪声（~1e-7 量级）
+      try {{
+        const ap = (window.AudioBuffer && AudioBuffer.prototype) || null;
+        if (ap && ap.getChannelData) {{
+          const origGCD = ap.getChannelData;
+          ap.getChannelData = function () {{
+            const buf = origGCD.apply(this, arguments);
+            try {{
+              const r = mkRand(SEED ^ 0x85EBCA6B);
+              for (let i = 0; i < buf.length; i += 100) {{
+                buf[i] = buf[i] + (r() - 0.5) * 1e-7;
+              }}
+            }} catch (e) {{}}
+            return buf;
+          }};
+        }}
+      }} catch (e) {{}}
+      try {{
+        const anp = (window.AnalyserNode && AnalyserNode.prototype) || null;
+        if (anp && anp.getFloatFrequencyData) {{
+          const origFFD = anp.getFloatFrequencyData;
+          anp.getFloatFrequencyData = function (arr) {{
+            origFFD.apply(this, arguments);
+            try {{
+              const r = mkRand(SEED ^ 0xC2B2AE35);
+              for (let i = 0; i < arr.length; i += 50) {{
+                arr[i] = arr[i] + (r() - 0.5) * 1e-4;
+              }}
+            }} catch (e) {{}}
+          }};
+        }}
+      }} catch (e) {{}}
+    }}
   }} catch (e) {{}}
 }})();
 """

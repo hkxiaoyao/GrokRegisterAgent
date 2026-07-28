@@ -1032,68 +1032,31 @@ export function SettingsForm() {
               : '未启用方案';
             const fp = draft.randomFingerprint ? '随机指纹' : '固定指纹';
             const wait = draft.turnstileAutoWaitMax ?? 60;
-            const iv = draft.registerIntervalMin ?? 1;
-            const ivText =
-              iv <= 0 ? '间隔 0' : iv >= 61 ? '间隔 随机25–50min' : `间隔 ${iv}min`;
-            return `${planText} · ${fp} · Turnstile ≤${wait}s · ${ivText}`;
+            return `${planText} · ${fp} · Turnstile ≤${wait}s`;
           })()}
         />
         <CardBody className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-xl bg-muted/70 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="field-label">人机验证 · 自动等待上限</div>
-                  <div className="mt-1 text-[12px] text-muted-foreground">
-                    Turnstile：每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
-                  </div>
+          <div className="rounded-xl bg-muted/70 p-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="field-label">人机验证 · 自动等待上限</div>
+                <div className="mt-1 text-[12px] text-muted-foreground">
+                  Turnstile：每次随机等待 30～{draft.turnstileAutoWaitMax ?? 60}s，再尝试点击
                 </div>
-                <span className="chip tabular-nums">{draft.turnstileAutoWaitMax ?? 60}s</span>
               </div>
-              <div className="mt-3">
-                <Slider
-                  min={30}
-                  max={180}
-                  value={draft.turnstileAutoWaitMax ?? 60}
-                  onValueChange={(v) => update('turnstileAutoWaitMax', v)}
-                />
-              </div>
-              {errors.turnstileAutoWaitMax && (
-                <p className="mt-2 text-xs text-danger">{errors.turnstileAutoWaitMax}</p>
-              )}
+              <span className="chip tabular-nums">{draft.turnstileAutoWaitMax ?? 60}s</span>
             </div>
-            <div className="rounded-xl bg-muted/70 p-4">
-              <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="field-label">注册间隔</div>
-                  <div className="mt-1 text-[12px] text-muted-foreground">
-                    {(draft.registerIntervalMin ?? 1) <= 0
-                      ? '0 = 不等待，立即下一轮'
-                      : (draft.registerIntervalMin ?? 1) >= 61
-                        ? '最高档 = 随机 25～50 分钟'
-                        : `每轮结束后等待 ${draft.registerIntervalMin ?? 1} 分钟再开下一轮`}
-                  </div>
-                </div>
-                <span className="chip tabular-nums">
-                  {(draft.registerIntervalMin ?? 1) <= 0
-                    ? '0'
-                    : (draft.registerIntervalMin ?? 1) >= 61
-                      ? '随机'
-                      : `${draft.registerIntervalMin ?? 1}min`}
-                </span>
-              </div>
-              <div className="mt-3">
-                <Slider
-                  min={0}
-                  max={61}
-                  value={draft.registerIntervalMin ?? 1}
-                  onValueChange={(v) => update('registerIntervalMin', v)}
-                />
-              </div>
-              {errors.registerIntervalMin && (
-                <p className="mt-2 text-xs text-danger">{errors.registerIntervalMin}</p>
-              )}
+            <div className="mt-3">
+              <Slider
+                min={30}
+                max={180}
+                value={draft.turnstileAutoWaitMax ?? 60}
+                onValueChange={(v) => update('turnstileAutoWaitMax', v)}
+              />
             </div>
+            {errors.turnstileAutoWaitMax && (
+              <p className="mt-2 text-xs text-danger">{errors.turnstileAutoWaitMax}</p>
+            )}
           </div>
           {draft.singBoxEnabled === true && (
             <div className="rounded-xl bg-muted/70 p-4">
@@ -1335,14 +1298,14 @@ export function SettingsForm() {
             />
             <ToggleRow
               label="Bot/风控号跳过 Mint"
-              hint="开=get-user 判定 bot 或高风险时跳过 mint（省时间，推荐）；关=风控号仍尝试 mint（可补签旧号，但易 Access denied 白烧）。写入 skip_bot_flag_on_mint"
+              hint="开=判定 bot 或高风险时跳过 mint（省时间，推荐）；关=仍尝试 mint，易 Access denied 白烧"
               checked={draft.skipBotFlag1OnMint !== false}
               onChange={(v) => update('skipBotFlag1OnMint', v)}
             />
             {draft.skipBotFlag1OnMint === false && (
               <ToggleRow
                 label="风控号减尝试"
-                hint="开=风控号 double 只跑 1×device + 1×pkce（非 3+2），省时间；关=完整内部重试。仅「跳过 Mint」关闭时生效。写入 risk_mint_light_attempts"
+                hint="开=风控号 double 只跑 1×device + 1×pkce，省时间；关=完整内部重试。仅「跳过 Mint」关闭时生效"
                 checked={draft.riskMintLightAttempts !== false}
                 onChange={(v) => update('riskMintLightAttempts', v)}
               />
@@ -1524,14 +1487,6 @@ export function SettingsForm() {
                 onChange={(v) => update('sub2apiExportEnabled', v)}
               />
             </div>
-            {/* ZDR 开关已隐藏（流程已断开，后续研究再开放）
-            <ToggleRow
-              label="关闭 ZDR"
-              hint="注册成功后、SSO 导出前用 SSO 尝试关 Zero Retention；probe 失败标「开」，不影响导出与授权"
-              checked={draft.enableDisableZdr !== false}
-              onChange={(v) => update('enableDisableZdr', v)}
-            />
-            */}
           </div>
 
           {/* ⑤ 注册运行参数（与 Auth 流水线相关的长跑/收码） */}
@@ -1542,7 +1497,7 @@ export function SettingsForm() {
             <div className="grid gap-3 sm:grid-cols-2">
               <Field
                 label="每 N 成功重启浏览器"
-                hint="长跑防泄漏；0=仅失败/首轮强制重启，默认 5"
+                hint="仅控制进程回收（防长跑内存泄漏）；0=仅失败/首轮强制重启，默认 5。指纹已改为每号独立（含 canvas/audio），与此值无关"
               >
                 <Input
                   type="number"

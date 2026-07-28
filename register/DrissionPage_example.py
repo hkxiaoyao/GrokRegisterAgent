@@ -184,6 +184,9 @@ _browser_proxy = ""
 _browser_path_cfg = ""
 _resolved_browser_path = ""
 _current_fingerprint = None
+# addScriptToEvaluateOnNewDocument 是累加的：复用进程多轮注入会逐轮堆叠噪声层
+# （第 N 个号被 N 层 canvas 扰动）。记录已注入脚本 id，重注入前先移除，保持单层。
+_stealth_script_ids: list[str] = []
 _auto_auth_export = True
 _proxy_prefer_local_forward = False
 try:
@@ -468,11 +471,24 @@ try {
   }
 } catch (e) {}
 """
+    # addScriptToEvaluateOnNewDocument 是累加的：复用进程反复注入会让噪声脚本
+    # 逐轮堆叠（第 N 号被 N 层 canvas 扰动）。重注入前先移除本模块上一轮登记的
+    # 脚本 id，保证每号只有一份当前指纹的 stealth/noise。
+    global _stealth_script_ids
+    for _old_id in list(_stealth_script_ids):
+        try:
+            target.run_cdp("Page.removeScriptToEvaluateOnNewDocument", identifier=_old_id)
+        except Exception:
+            pass
+    _stealth_script_ids = []
     for src in (base_src, fp_src):
         if not src:
             continue
         try:
-            target.run_cdp("Page.addScriptToEvaluateOnNewDocument", source=src)
+            _ret = target.run_cdp("Page.addScriptToEvaluateOnNewDocument", source=src)
+            _sid = (_ret or {}).get("identifier") if isinstance(_ret, dict) else None
+            if _sid:
+                _stealth_script_ids.append(_sid)
         except Exception:
             pass
         try:
@@ -488,6 +504,53 @@ try {
             target.run_cdp("Emulation.setTimezoneOverride", timezoneId=tz)
     except Exception:
         # 个别 Chromium 对未知时区 id 会抛错：忽略，退回 JS patch
+        pass
+
+
+def _regen_fingerprint_for_reuse(tab=None):
+    """复用进程（不重启浏览器）时重新生成并注入指纹。
+
+    背景：默认 browser_recycle_every=5，复用分支只清 cookie 不换指纹，导致
+    中间 4 个号共用同一份 canvas/audio/时区/语言指纹——同批号被风控聚成一簇、
+    风险随号数单调抬升。这里在复用时也刷新 _current_fingerprint（关键是每号
+    独立的 noise_seed → canvas/audio 哈希逐号不同），并经 _apply_stealth_patches
+    重注入（该函数会先移除上一轮 addScriptToEvaluateOnNewDocument 脚本，避免堆叠）。
+
+    窗口尺寸经 --window-size 在启动时固定，复用中改不了（弱字段，忽略）；canvas/
+    audio/时区/语言/UA 属性均为 JS/CDP 注入，可热刷新。
+    """
+    global _current_fingerprint
+    if build_fingerprint is None:
+        return
+    target = tab or page
+    if target is None:
+        return
+    try:
+        major = _real_chrome_major()
+    except Exception:
+        major = None
+    try:
+        geo_cc = _detect_exit_country(_browser_proxy)
+    except Exception:
+        geo_cc = None
+    try:
+        _current_fingerprint = build_fingerprint(chrome_major=major, geo_country=geo_cc)
+    except Exception as e:
+        print(f"[Warn] 复用指纹生成失败: {e}", flush=True)
+        return
+    try:
+        _apply_stealth_patches(target)
+    except Exception as e:
+        print(f"[Warn] 复用指纹注入失败: {e}", flush=True)
+        return
+    try:
+        print(
+            f"[*] 复用刷新特征: tz={_current_fingerprint.timezone} "
+            f"lang={_current_fingerprint.locale} "
+            f"noise={_current_fingerprint.noise_seed & 0xffff:04x}",
+            flush=True,
+        )
+    except Exception:
         pass
 
 
@@ -6274,6 +6337,12 @@ def main():
                         pass
                     if cleared:
                         print("[*] 浏览器会话已清理（复用进程，已保 CF）", flush=True)
+                        # 复用进程也刷新指纹（关键：换 noise_seed，canvas/audio
+                        # 哈希逐号不同），消除「5 个一组同指纹」的跨号关联簇。
+                        try:
+                            _regen_fingerprint_for_reuse(page)
+                        except Exception as _fe:
+                            print(f"[Warn] 复用指纹刷新跳过: {_fe}", flush=True)
                 except Exception as ce:
                     print(f"[Warn] clear_session 失败，改为重启: {ce}", flush=True)
                     cleared = False
