@@ -117,6 +117,11 @@ function AuthQueueMetricsInline() {
     mint_retry_pending?: number;
     mint_max_attempts?: number;
     mint_budget_exhausted_total?: number;
+    // 独立 mint 池：授权队列 done_ok 只是「转交完成」，真实出号数在 mint 池
+    separate_pool?: boolean;
+    mint_pending?: number;
+    mint_done_ok?: number;
+    mint_done_fail?: number;
   } | null>(null);
 
   useEffect(() => {
@@ -143,8 +148,16 @@ function AuthQueueMetricsInline() {
 
   const pending = m?.pending ?? m?.queue_size ?? 0;
   const workers = m?.workers ?? 0;
-  const ok = m?.done_ok ?? 0;
-  const fail = m?.done_fail ?? 0;
+  // 独立 mint 池模式：授权队列 done_ok 只是「转交完成」，不代表真出号。
+  // 真实成败在 mint 池的独立计数器（mint_done_ok/mint_done_fail）。
+  const separatePool = m?.separate_pool === true;
+  const handedOk = m?.done_ok ?? 0;
+  const ok = separatePool ? (m?.mint_done_ok ?? 0) : handedOk;
+  const fail = separatePool ? (m?.mint_done_fail ?? 0) : (m?.done_fail ?? 0);
+  // 在途：已转交独立池但 mint 尚未跑完 = 转交数 − 真实成败之和（差值天然含池内 pending+running），钳到 ≥0
+  const inflight = separatePool
+    ? Math.max(0, handedOk - (m?.mint_done_ok ?? 0) - (m?.mint_done_fail ?? 0))
+    : 0;
   const qmax = m?.queue_max ?? 0;
   const failBy = m?.fail_by_status || {};
   const ratio = m?.fail_status_ratio_pct || {};
@@ -198,9 +211,26 @@ function AuthQueueMetricsInline() {
             ) : null}
           </div>
         </div>
-        <div className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2">
-          <div className="text-[10px] text-muted-foreground">成功</div>
-          <div className="text-[15px] font-semibold tabular-nums text-emerald-600">{ok}</div>
+        <div
+          className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2"
+          title={
+            separatePool
+              ? '独立 mint 池模式：此处为真实出号数（mint 生成 auth 文件），非转交数'
+              : undefined
+          }
+        >
+          <div className="text-[10px] text-muted-foreground">
+            {separatePool ? '成功·出号' : '成功'}
+          </div>
+          <div className="text-[15px] font-semibold tabular-nums text-emerald-600">
+            {ok}
+            {inflight > 0 ? (
+              <span className="text-[11px] font-normal text-muted-foreground">
+                {' '}
+                +{inflight} 在途
+              </span>
+            ) : null}
+          </div>
         </div>
         <div className="rounded-lg border border-border/50 bg-muted/50 px-2.5 py-2">
           <div className="text-[10px] text-muted-foreground">失败</div>

@@ -287,6 +287,7 @@ def queue_stats() -> dict[str, Any]:
             for k, v in m_fail.items():
                 fail_by[str(k)] = int(fail_by.get(str(k)) or 0) + int(v or 0)
         mint_extra = {
+            "separate_pool": ms.get("separate_pool"),
             "mint_pending": ms.get("pending"),
             "mint_queue_size": ms.get("queue_size"),
             "mint_done_ok": ms.get("done_ok"),

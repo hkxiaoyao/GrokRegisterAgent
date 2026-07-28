@@ -144,6 +144,10 @@ const webApi: RendererApi = {
       updated_at?: number;
       updated_iso?: string;
       stale?: boolean;
+      separate_pool?: boolean;
+      mint_pending?: number;
+      mint_done_ok?: number;
+      mint_done_fail?: number;
     }>('GET', '/api/auth-queue/metrics'),
   listRegisterJobs: () => http('GET', '/api/run/jobs'),
   getRegisterJobStatus: (runId) =>
