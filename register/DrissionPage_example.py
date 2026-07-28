@@ -368,8 +368,11 @@ def _new_chromium_options() -> ChromiumOptions:
     opts.set_argument(f"--window-size={_WINDOW_W},{_WINDOW_H}")
     opts.set_argument("--window-position=0,0")
     opts.set_argument("--disable-blink-features=AutomationControlled")
-    opts.set_argument("--lang=en-US,en")
-    opts.set_argument("--accept-lang=en-US,en")
+    # 不再硬编码 --lang=en-US：与随机指纹的 --lang 冲突会导致 HTTP Accept-Language
+    # 与 navigator.languages 不一致（bot 信号）。语言统一交 fingerprint.apply_to_chromium_options。
+    # 封堵 WebRTC 真实 IP 泄漏：HTTP 走代理但 WebRTC STUN 仍会暴露宿主真实公网 IP，
+    # 让代理形同虚设。disable_non_proxied_udp 强制 UDP 只走代理路径。
+    opts.set_argument("--force-webrtc-ip-handling-policy=disable_non_proxied_udp")
     try:
         opts.set_argument("--no-first-run")
         opts.set_argument("--no-default-browser-check")
@@ -476,6 +479,16 @@ try {
             target.run_js(src)
         except Exception:
             pass
+    # 时区：用 CDP Emulation.setTimezoneOverride 覆盖整个 V8 时区栈。
+    # 仅 JS patch Intl.resolvedOptions() 会导致 getTimezoneOffset() 仍是宿主时区，
+    # 两者不一致是强 bot 信号；CDP override 让 Date/Intl 全部一致。
+    try:
+        tz = getattr(_current_fingerprint, "timezone", None)
+        if tz:
+            target.run_cdp("Emulation.setTimezoneOverride", timezoneId=tz)
+    except Exception:
+        # 个别 Chromium 对未知时区 id 会抛错：忽略，退回 JS patch
+        pass
 
 
 def _resolve_browser_binary_path() -> str:
@@ -589,6 +602,67 @@ def _real_chrome_major() -> int | None:
     if 80 <= major <= 200:
         return major
     return None
+
+
+_geo_country_cache: dict[str, str] = {}
+
+
+def _detect_exit_country(proxy: str) -> str | None:
+    """探测代理出口国家（ISO alpha-2），供指纹时区/语言对齐。
+
+    - 走与浏览器同一代理，读 Cloudflare trace（cdn-cgi/trace 返回 loc=XX）。
+    - 仅支持 http/https 代理（urllib ProxyHandler）；socks / 本机转发跳过。
+    - 任何失败返回 None → 指纹回退全局随机池（旧行为），不阻断注册。
+    - 结果按 IP 键缓存，避免每轮重复查询。
+    """
+    import urllib.request
+
+    p = str(proxy or "").strip()
+    cache_key = ""
+    try:
+        cache_key = proxy_identity_key(p) if (p and callable(proxy_identity_key)) else p
+    except Exception:
+        cache_key = p
+    if cache_key and cache_key in _geo_country_cache:
+        return _geo_country_cache[cache_key] or None
+
+    scheme = ""
+    try:
+        if p and parse_proxy_url:
+            info = parse_proxy_url(p)
+            scheme = str((info or {}).get("scheme") or "").lower()
+    except Exception:
+        scheme = ""
+    # socks 系 urllib 不原生支持；直连(空 proxy)也照常查本机出口
+    if scheme.startswith("socks"):
+        if cache_key:
+            _geo_country_cache[cache_key] = ""
+        return None
+
+    country = None
+    try:
+        handlers = []
+        if p:
+            handlers.append(urllib.request.ProxyHandler({"http": p, "https": p}))
+        opener = urllib.request.build_opener(*handlers)
+        req = urllib.request.Request(
+            "https://www.cloudflare.com/cdn-cgi/trace",
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        with opener.open(req, timeout=8) as resp:
+            body = resp.read().decode("utf-8", "replace")
+        for line in body.splitlines():
+            if line.startswith("loc="):
+                loc = line[4:].strip().upper()
+                if len(loc) == 2 and loc.isalpha():
+                    country = loc
+                break
+    except Exception:
+        country = None
+
+    if cache_key:
+        _geo_country_cache[cache_key] = country or ""
+    return country
 
 
 def _probe_browser_version() -> str:
@@ -1012,15 +1086,22 @@ def _start_browser_once():
     if build_fingerprint is not None:
         try:
             major = _real_chrome_major()
-            _current_fingerprint = build_fingerprint(chrome_major=major)
+            # 出口国家 → 时区/语言对齐，消除 IP↔时区↔语言错配画像。
+            # 经本轮代理查询；失败/直连则 None，指纹回退全局随机池。
+            geo_cc = _detect_exit_country(_browser_proxy)
+            _current_fingerprint = build_fingerprint(
+                chrome_major=major, geo_country=geo_cc
+            )
             if apply_to_chromium_options is not None:
                 apply_to_chromium_options(co, _current_fingerprint)
             ua_note = f" chrome_major={major}" if major else ""
+            geo_note = f" geo={geo_cc}" if geo_cc else " geo=?(随机池)"
             print(
                 f"[*] 本轮特征: ua={_current_fingerprint.user_agent[:60]}… "
                 f"tz={_current_fingerprint.timezone} "
+                f"lang={_current_fingerprint.locale} "
                 f"size={_current_fingerprint.window_w}x{_current_fingerprint.window_h}"
-                f"{ua_note}"
+                f"{ua_note}{geo_note}"
             )
         except Exception as e:
             print(f"[Warn] 指纹生成失败: {e}")

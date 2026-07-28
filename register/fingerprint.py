@@ -63,6 +63,74 @@ _LANG_POOL = [
     (["en-AU", "en"], "en-AU,en;q=0.9"),
 ]
 
+# 代理出口国家（ISO 3166-1 alpha-2）→ 该国合理的时区 + 语言子集。
+# 目的：消除「IP 落在美国、时区却随机成 Asia/Tokyo」这类三方错配画像。
+# 未命中的国家回退到全局 _TZ_POOL / _LANG_POOL 随机（保持旧行为）。
+#
+# 语言策略：时区按出口国对齐（风控关键），但 Accept-Language 第一项统一 en，
+# 让 x.ai 渲染英文 UI（否则日/德/法页面按钮文案脚本匹配不到，注册第一步就失败）。
+# 「身处德国/日本但浏览器用英文」是常见且自洽的真实用户画像，非本地语言不影响
+# IP↔时区一致性。本地语言作为 q<en 的次选保留，兼顾画像真实度。
+_GEO_PROFILE: dict[str, dict[str, list]] = {
+    "US": {
+        "tz": [
+            "America/New_York",
+            "America/Chicago",
+            "America/Denver",
+            "America/Los_Angeles",
+            "America/Phoenix",
+        ],
+        "lang": [(["en-US", "en"], "en-US,en;q=0.9")],
+    },
+    "CA": {
+        "tz": ["America/Toronto", "America/Vancouver", "America/Edmonton"],
+        "lang": [
+            (["en-CA", "en"], "en-CA,en;q=0.9"),
+            (["en-CA", "fr-CA", "en"], "en-CA,fr-CA;q=0.9,en;q=0.8"),
+        ],
+    },
+    "GB": {
+        "tz": ["Europe/London"],
+        "lang": [(["en-GB", "en"], "en-GB,en;q=0.9")],
+    },
+    "IE": {
+        "tz": ["Europe/Dublin"],
+        "lang": [(["en-IE", "en"], "en-IE,en;q=0.9")],
+    },
+    "AU": {
+        "tz": ["Australia/Sydney", "Australia/Melbourne", "Australia/Perth"],
+        "lang": [(["en-AU", "en"], "en-AU,en;q=0.9")],
+    },
+    "NZ": {
+        "tz": ["Pacific/Auckland"],
+        "lang": [(["en-NZ", "en"], "en-NZ,en;q=0.9")],
+    },
+    "DE": {
+        "tz": ["Europe/Berlin"],
+        "lang": [(["en-US", "en", "de"], "en-US,en;q=0.9,de;q=0.7")],
+    },
+    "FR": {
+        "tz": ["Europe/Paris"],
+        "lang": [(["en-US", "en", "fr"], "en-US,en;q=0.9,fr;q=0.7")],
+    },
+    "NL": {
+        "tz": ["Europe/Amsterdam"],
+        "lang": [(["en-US", "en", "nl"], "en-US,en;q=0.9,nl;q=0.7")],
+    },
+    "SG": {
+        "tz": ["Asia/Singapore"],
+        "lang": [(["en-SG", "en"], "en-SG,en;q=0.9")],
+    },
+    "HK": {
+        "tz": ["Asia/Hong_Kong"],
+        "lang": [(["en-HK", "en", "zh-HK"], "en-HK,en;q=0.9,zh-HK;q=0.7")],
+    },
+    "JP": {
+        "tz": ["Asia/Tokyo"],
+        "lang": [(["en-US", "en", "ja"], "en-US,en;q=0.9,ja;q=0.7")],
+    },
+}
+
 # 常见桌面 GPU 字符串（仅降低「全员同一 WebGL」；无法对抗服务端 bot_flag 签发）
 _WEBGL_POOL = [
     (
@@ -92,6 +160,26 @@ _WEBGL_POOL = [
 ]
 
 
+def _geo_profile(country: str | None) -> dict | None:
+    """按 ISO alpha-2 国家码取地理画像；未命中/无效返回 None（回退全局随机）。
+
+    返回 {"timezones": [...], "langs": [(langs, accept), ...]}。
+    """
+    if not country:
+        return None
+    cc = str(country).strip().upper()
+    if len(cc) != 2:
+        return None
+    prof = _GEO_PROFILE.get(cc)
+    if not prof:
+        return None
+    tzs = prof.get("tz") or []
+    langs = prof.get("lang") or []
+    if not tzs or not langs:
+        return None
+    return {"timezones": list(tzs), "langs": list(langs)}
+
+
 def _chrome_ua(platform_token: str, chrome_major: int) -> str:
     return (
         f"Mozilla/5.0 ({platform_token}) AppleWebKit/537.36 "
@@ -104,12 +192,15 @@ def build_fingerprint(
     *,
     chrome_major: int | None = None,
     prefer_native_os: bool = True,
+    geo_country: str | None = None,
 ) -> BrowserFingerprint:
     """生成浏览器指纹。
 
     chrome_major: 若传入真实 Chromium 大版本，UA 将使用该版本（±0~1 微调），
     避免「二进制 150 + UA 137」被 Turnstile 直接判定异常。
     prefer_native_os: Linux 容器上提高 Linux UA 权重，减少 Win/Mac 错配。
+    geo_country: 代理出口国家（ISO alpha-2）。命中 _GEO_PROFILE 时，时区与语言
+        从该国子集抽取，消除 IP↔时区↔语言错配画像；未命中则回退全局随机池。
     """
     import platform as _plat
 
@@ -154,8 +245,14 @@ def build_fingerprint(
         token = "X11; Linux x86_64"
         max_touch = 0
 
-    langs, accept = rnd.choice(_LANG_POOL)
-    tz = rnd.choice(_TZ_POOL)
+    # 时区/语言：优先按代理出口国家对齐，消除 IP↔时区↔语言错配
+    geo = _geo_profile(geo_country)
+    if geo is not None:
+        tz = rnd.choice(geo["timezones"])
+        langs, accept = rnd.choice(geo["langs"])
+    else:
+        langs, accept = rnd.choice(_LANG_POOL)
+        tz = rnd.choice(_TZ_POOL)
     # 常见分辨率（含 Xvfb 常用）
     sizes = [
         (1920, 1080),
