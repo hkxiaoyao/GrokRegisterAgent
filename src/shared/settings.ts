@@ -22,8 +22,8 @@ export type ThemeMode = 'system' | 'light' | 'dark';
 /** 池轮换策略 */
 export type PoolMode = 'round_robin' | 'random';
 
-/** 临时邮箱后端：cloudflare_temp_email / DuckMail / YYDS / GPTMail */
-export type MailProvider = 'cloudflare' | 'duckmail' | 'yyds' | 'gptmail';
+/** 临时邮箱后端：cloudflare_temp_email / DuckMail / YYDS / GPTMail / CloudMail */
+export type MailProvider = 'cloudflare' | 'duckmail' | 'yyds' | 'gptmail' | 'cloudmail';
 
 /**
  * 注册主路径：
@@ -132,7 +132,7 @@ export interface AppSettings {
   mail: MailSettings;
   /**
    * 临时邮箱提供方。写入 Python config：mail_provider
-   * cloudflare（默认）| duckmail | yyds | gptmail
+   * cloudflare（默认）| duckmail | yyds | gptmail | cloudmail
    */
   mailProvider: MailProvider;
   /**
