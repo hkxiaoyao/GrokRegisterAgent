@@ -378,11 +378,15 @@ def hybrid_register(
             log(f"[hybrid] code={clean}")
 
             # Protocol verify keeps server state; UI finish must NOT open_signup (wipes SPA step).
-            r2 = client.verify_email_validation_code(email, clean)
-            log(f"[hybrid] VerifyEmail status={r2.get('status')}")
-            # soft-fail: even if protocol verify flakes, browser code submit may still work
-            if int(r2.get("status") or 0) >= 400:
-                log(f"[hybrid] VerifyEmail soft-fail {r2.get('strings')} — continue UI")
+            # soft-fail: browser code submit is the reliable path; a flaky proxy (curl reset)
+            # must NOT crash the whole round — swallow and continue to UI finish.
+            try:
+                r2 = client.verify_email_validation_code(email, clean)
+                log(f"[hybrid] VerifyEmail status={r2.get('status')}")
+                if int(r2.get("status") or 0) >= 400:
+                    log(f"[hybrid] VerifyEmail soft-fail {r2.get('strings')} — continue UI")
+            except Exception as ve:
+                log(f"[hybrid] VerifyEmail err soft-fail: {str(ve)[:160]} — continue UI")
             if stop():
                 return {"ok": False, "error": "stopped", "mode": "hybrid"}
 

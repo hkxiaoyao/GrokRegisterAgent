@@ -1,13 +1,75 @@
 """Shared HTTP session for protocol registration."""
 from __future__ import annotations
 
-from typing import Any, Optional
+import time
+from typing import Any, Callable, Optional
 
 try:
     from curl_cffi import requests as curl_requests
 except Exception:  # pragma: no cover
     curl_requests = None
     import requests as std_requests
+
+
+# Transient proxy/TLS blips (curl 35 reset, broken pipe, timeout, SSL) that a
+# flaky sing-box / proxy hop throws mid-request. Retrying the same request on a
+# fresh connection usually succeeds — a single reset must NOT kill the round.
+_TRANSIENT_NEEDLES = (
+    "broken pipe",
+    "connection reset",
+    "connection aborted",
+    "reset by peer",
+    "recv failure",
+    "send failure",
+    "timed out",
+    "timeout",
+    "temporarily unavailable",
+    "network is unreachable",
+    "unexpected_eof",
+    "eof occurred",
+    "ssl",
+    "handshake",
+    "remote end closed",
+    "bad gateway",
+    "connection refused",
+    "failed to perform",
+    "curl: (35)",
+    "curl: (52)",
+    "curl: (56)",
+)
+
+
+def _is_transient_net_error(exc: BaseException) -> bool:
+    """True for proxy/TLS blips that should be retried, not surfaced."""
+    if isinstance(
+        exc,
+        (
+            TimeoutError,
+            BrokenPipeError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            ConnectionRefusedError,
+        ),
+    ):
+        return True
+    try:
+        import ssl
+
+        if isinstance(exc, ssl.SSLError):
+            return True
+    except Exception:
+        pass
+    if isinstance(exc, OSError) and getattr(exc, "errno", None) in {
+        32,
+        104,
+        110,
+        111,
+        113,
+        101,
+    }:
+        return True
+    msg = str(exc).lower()
+    return any(n in msg for n in _TRANSIENT_NEEDLES)
 
 
 class ProtocolSession:
@@ -40,13 +102,40 @@ class ProtocolSession:
         )
         if self.proxy:
             self.session.proxies = {"http": self.proxy, "https": self.proxy}
+        # reset-retry knobs (proxy blips): total attempts = retries + 1
+        self.net_retries = 2
+        self.net_retry_sleep = 1.5
+
+    def _with_retry(self, do: Callable[[], Any], label: str = "") -> Any:
+        """Run an HTTP call, retrying only on transient proxy/TLS blips.
+
+        curl_cffi raises curl (35) 'Recv failure: Connection reset by peer' when
+        the sing-box / proxy hop drops mid-flight. That is transient — retry on a
+        fresh attempt. HTTP status errors are returned by curl_cffi (not raised),
+        so they pass straight through untouched.
+        """
+        attempts = max(int(self.net_retries), 0) + 1
+        last: BaseException | None = None
+        for i in range(attempts):
+            try:
+                return do()
+            except BaseException as e:  # noqa: BLE001
+                last = e
+                if not _is_transient_net_error(e) or i + 1 >= attempts:
+                    raise
+                time.sleep(self.net_retry_sleep * (i + 1))
+        assert last is not None
+        raise last
 
     def get(self, url: str, timeout: int = 30) -> Any:
-        if curl_requests is not None:
-            return self.session.get(
-                url, timeout=timeout, impersonate=self.impersonate
-            )
-        return self.session.get(url, timeout=timeout)
+        def _do():
+            if curl_requests is not None:
+                return self.session.get(
+                    url, timeout=timeout, impersonate=self.impersonate
+                )
+            return self.session.get(url, timeout=timeout)
+
+        return self._with_retry(_do, label="get")
 
     def bootstrap(self, timeout: int = 30) -> Any:
         return self.get("https://accounts.x.ai/sign-up?redirect=grok-com", timeout=timeout)
@@ -97,16 +186,24 @@ class ProtocolSession:
         }
         if headers:
             h.update(headers)
-        if curl_requests is not None:
-            return self.session.post(
-                url, data=data, headers=h, timeout=timeout, impersonate=self.impersonate
-            )
-        return self.session.post(url, data=data, headers=h, timeout=timeout)
+
+        def _do():
+            if curl_requests is not None:
+                return self.session.post(
+                    url, data=data, headers=h, timeout=timeout, impersonate=self.impersonate
+                )
+            return self.session.post(url, data=data, headers=h, timeout=timeout)
+
+        return self._with_retry(_do, label="post_bytes")
 
     def post_raw(self, url: str, data: bytes, headers: Optional[dict] = None, timeout: int = 45):
         h = dict(headers or {})
-        if curl_requests is not None:
-            return self.session.post(
-                url, data=data, headers=h, timeout=timeout, impersonate=self.impersonate
-            )
-        return self.session.post(url, data=data, headers=h, timeout=timeout)
+
+        def _do():
+            if curl_requests is not None:
+                return self.session.post(
+                    url, data=data, headers=h, timeout=timeout, impersonate=self.impersonate
+                )
+            return self.session.post(url, data=data, headers=h, timeout=timeout)
+
+        return self._with_retry(_do, label="post_raw")
