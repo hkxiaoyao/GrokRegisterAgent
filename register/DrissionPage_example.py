@@ -386,6 +386,11 @@ def _new_chromium_options() -> ChromiumOptions:
         opts.set_argument("--disable-gpu-compositing")
         opts.set_argument("--use-gl=angle")
         opts.set_argument("--use-angle=swiftshader-webgl")
+        # Chrome 137+ 默认禁用 SwiftShader 软件 WebGL：无独显机器上 --use-angle=swiftshader
+        # 已不足以启用，必须显式解禁，否则 canvas.getContext('webgl') 返回 null/降级上下文，
+        # Turnstile 取不到有效 WebGL 指纹 → widget 折叠 1x1 拒绝渲染。镜像 chromium 未锁版本
+        # （Dockerfile apt install chromium），bookworm 现版早已 ≥137，故此参数为必需。
+        opts.set_argument("--enable-unsafe-swiftshader")
         opts.set_argument("--enable-webgl")
         opts.set_argument("--ignore-gpu-blocklist")
         opts.set_argument("--enable-features=NetworkService,NetworkServiceInProcess")
@@ -3624,7 +3629,13 @@ def getTurnstileToken(timeout=50, log_callback=None, *, fast=False, auto_wait_ca
         target, how = _locate_turnstile_click_target()
         if target is None:
             last_diag = f"locate-fail:{how} state={state}"
-            if state.get("collapsedOnly") and reset_count < 2 and time.time() + 8 < deadline:
+            # 纯 1x1（无 hostSized 可点框）= CF 拒渲染 challenge，无任何点击目标。
+            # 这种环境失败连点/多次 reset 纯烧时间；1 次 soft reset 仍无目标即 fail-fast，
+            # 让本轮快速轮转到下一个 IP，而不是空耗 deadline。
+            # hostSized 折叠态另有实测出 token 的可能，仍保留 2 次 reset。
+            pure_1x1 = state.get("collapsedOnly") and not state.get("hostSized")
+            reset_cap = 1 if pure_1x1 else 2
+            if state.get("collapsedOnly") and reset_count < reset_cap and time.time() + 8 < deadline:
                 print("[*] Turnstile 控件折叠为 1x1，soft reset 一次。")
                 _soft_reset_turnstile()
                 reset_count += 1
@@ -3636,6 +3647,10 @@ def getTurnstileToken(timeout=50, log_callback=None, *, fast=False, auto_wait_ca
                         return token
                     time.sleep(0.4)
                 continue
+            if pure_1x1:
+                last_diag = f"pure-1x1-fail-fast reset={reset_count} state={state}"
+                print("[*] Turnstile 纯 1x1 无可点目标，soft reset 后仍折叠 → fail-fast 跳过本轮。")
+                break
             time.sleep(0.6)
             continue
 
