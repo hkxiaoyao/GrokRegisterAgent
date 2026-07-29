@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import {
   ArrowUpCircle,
+  Copy,
   Database,
   Github,
   KeyRound,
@@ -72,6 +73,33 @@ export default function App() {
       setUpdate(info);
       const bid = info?.buildId || info?.current;
       if (bid) setLocalBuildId(bid);
+      if (info?.error) {
+        pushToast({
+          tone: 'danger',
+          title: '检查更新失败',
+          description: info.error
+        });
+      } else if (info?.hasUpdate) {
+        pushToast({
+          tone: 'ok',
+          title: `发现新构建 ${info.latest ?? ''}`,
+          description:
+            info.updateHint ||
+            '请在宿主机 pull 镜像并 force-recreate；应用内不会自动重建容器'
+        });
+      } else if (info) {
+        pushToast({
+          tone: 'ok',
+          title: '已是最新',
+          description: info.updateHint || `BUILD_ID ${bid ?? info.current}`
+        });
+      }
+    } catch (err) {
+      pushToast({
+        tone: 'danger',
+        title: '检查更新失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
     } finally {
       setUpdateLoading(false);
     }
@@ -374,6 +402,7 @@ export default function App() {
  * 侧边栏底部：本地 BUILD_ID + 「检查更新」。
  * 规则：只有用户点击 onCheck 后才有远程对比结果；未检查时永远显示「检查更新」，
  * 禁止把「仅本地 id」显示成「已最新」。
+ * 有更新时提供「复制升级命令」（宿主机执行）；不在容器内 docker pull/自重建。
  */
 function SidebarUpdateBar({
   localBuildId,
@@ -386,11 +415,13 @@ function SidebarUpdateBar({
   loading: boolean;
   onCheck(): void;
 }) {
+  const pushToast = useToastStore((s) => s.push);
   // 显示 BUILD_ID（git short SHA），与注册机日志 Build: xxxxxxx 对照
   const buildId = update?.buildId || update?.current || localBuildId;
   const hasUpdate = !!update?.hasUpdate;
   // 仅当用户点过检查且接口成功返回（无 error）时才算「已检测」
   const checkedOk = !!update && !update.error;
+  const hostOverride = !!update?.hostRegisterOverride;
 
   let actionLabel = '检查更新';
   if (loading) actionLabel = '检查中…';
@@ -398,10 +429,16 @@ function SidebarUpdateBar({
   else if (checkedOk && !hasUpdate) actionLabel = '已最新';
   // 未点击 / error → 保持「检查更新」，可点（重试）
 
-  const chipTitle =
+  const chipTitle = [
     checkedOk && hasUpdate
       ? `本地 BUILD_ID=${buildId ?? '?'} · 远端 beta=${update?.latest ?? '?'}`
-      : `BUILD_ID ${buildId ?? '…'}（与注册机启动 Build 一致；更新需手动点检查）`;
+      : `BUILD_ID ${buildId ?? '…'}（与注册机启动 Build 一致；更新需手动点检查）`,
+    update?.deployMode ? `部署=${update.deployMode}` : null,
+    hostOverride ? '宿主 register 覆盖中：只 pull 镜像可能仍旧版' : null,
+    update?.updateHint || null
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   // 侧栏底部控件统一：h-8 + rounded-xl + bg-muted；有更新时 ok 强调
   const shell =
@@ -415,37 +452,89 @@ function SidebarUpdateBar({
     shell +
     ' min-w-0 flex-1 truncate bg-muted font-mono tabular-nums text-muted-foreground';
 
+  const copyUpdateCommands = async () => {
+    const text =
+      update?.updateCommands?.trim() ||
+      [
+        'docker compose pull',
+        'docker compose up -d --force-recreate --remove-orphans'
+      ].join('\n');
+    try {
+      await navigator.clipboard.writeText(text);
+      pushToast({
+        tone: 'ok',
+        title: '已复制升级命令',
+        description: hostOverride
+          ? '含 git pull：宿主 register 覆盖时必须更新宿主代码'
+          : '在 docker-compose 目录的宿主机终端执行'
+      });
+    } catch (err) {
+      pushToast({
+        tone: 'danger',
+        title: '复制失败',
+        description: err instanceof Error ? err.message : String(err)
+      });
+    }
+  };
+
   return (
-    <div className="flex min-w-0 items-center gap-1.5">
-      <span className={chipCls} title={chipTitle}>
-        {buildId ?? '…'}
-      </span>
-      {checkedOk && hasUpdate ? (
-        <a
-          href={update?.htmlUrl ?? '#'}
-          target="_blank"
-          rel="noreferrer"
-          className={okBtnCls}
-          title={`远端 beta HEAD ${update?.latest ?? ''}，本地 ${buildId ?? ''}`}
-        >
-          <ArrowUpCircle className="h-3 w-3 shrink-0" aria-hidden />
-          <span className="max-w-[5.5rem] truncate">{actionLabel}</span>
-        </a>
-      ) : (
+    <div className="space-y-1.5">
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className={chipCls} title={chipTitle}>
+          {buildId ?? '…'}
+          {hostOverride ? (
+            <span className="ml-1 font-sans text-[10px] text-amber-600 dark:text-amber-400">
+              宿主
+            </span>
+          ) : null}
+        </span>
+        {checkedOk && hasUpdate ? (
+          <a
+            href={update?.htmlUrl ?? '#'}
+            target="_blank"
+            rel="noreferrer"
+            className={okBtnCls}
+            title={`远端 beta HEAD ${update?.latest ?? ''}，本地 ${buildId ?? ''}\n${update?.updateHint ?? ''}`}
+          >
+            <ArrowUpCircle className="h-3 w-3 shrink-0" aria-hidden />
+            <span className="max-w-[5.5rem] truncate">{actionLabel}</span>
+          </a>
+        ) : (
+          <button
+            type="button"
+            onClick={onCheck}
+            disabled={loading}
+            className={mutedBtnCls}
+            title={
+              update?.error ||
+              update?.updateHint ||
+              '点击后对照 GitHub beta 最新 commit hash（不会自动重建容器）'
+            }
+          >
+            <RefreshCcw
+              className={cn('h-3 w-3 shrink-0', loading && 'animate-spin')}
+              aria-hidden
+            />
+            <span className="max-w-[5.5rem] truncate">{actionLabel}</span>
+          </button>
+        )}
+      </div>
+      {checkedOk && hasUpdate && update?.updateCommands ? (
         <button
           type="button"
-          onClick={onCheck}
-          disabled={loading}
-          className={mutedBtnCls}
-          title={update?.error || '点击后对照 GitHub beta 最新 commit hash（不会自动检测）'}
+          onClick={() => void copyUpdateCommands()}
+          className={
+            shell +
+            ' w-full bg-muted/80 text-muted-foreground hover:bg-accent hover:text-foreground'
+          }
+          title={update.updateHint || '复制宿主机升级命令'}
         >
-          <RefreshCcw
-            className={cn('h-3 w-3 shrink-0', loading && 'animate-spin')}
-            aria-hidden
-          />
-          <span className="max-w-[5.5rem] truncate">{actionLabel}</span>
+          <Copy className="h-3 w-3 shrink-0" aria-hidden />
+          <span className="truncate">
+            {hostOverride ? '复制升级命令（含 git pull）' : '复制 Docker 升级命令'}
+          </span>
         </button>
-      )}
+      ) : null}
     </div>
   );
 }

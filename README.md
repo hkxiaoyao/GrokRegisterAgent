@@ -35,6 +35,27 @@ cp .env.example .env
 docker compose up -d --pull always --remove-orphans
 ```
 
+### 更新镜像（对应 issue #10）
+
+控制台侧栏可 **检查更新**（对比 GitHub `beta` 的 commit short SHA / `BUILD_ID`），并 **复制宿主机升级命令**。  
+**不会在容器内自动 `docker pull` / 自重建**（需宿主机 Docker；挂 socket 风险高，默认不做）。
+
+```bash
+# 纯吃 GHCR 镜像时（推荐生产去掉 ./register 挂载）
+docker compose pull
+docker compose up -d --force-recreate --remove-orphans
+```
+
+根目录 `docker-compose.yml` 若仍挂载 `./register:/opt/register-host:ro`，entrypoint 会 **优先同步宿主 register**，只强拉镜像时 UI/`Build:` 仍可能是旧脚本：
+
+```bash
+git pull
+docker compose pull
+docker compose up -d --force-recreate --remove-orphans
+```
+
+确认：`docker logs grok-register-agent 2>&1 | head` 中 `Build:` 与侧栏 BUILD_ID、远端 beta short SHA 一致。
+
 ### 可选：外置 Turnstile Solver
 
 默认**不**拉取 Solver 子容器。需要时：

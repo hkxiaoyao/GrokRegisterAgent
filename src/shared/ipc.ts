@@ -36,6 +36,13 @@ export interface ThemeState {
   effective: 'light' | 'dark';
 }
 
+/** 运行形态：影响「有更新时怎么升级」的提示文案 */
+export type UpdateDeployMode =
+  | 'docker-image'
+  | 'docker-host-register'
+  | 'native'
+  | 'unknown';
+
 /** 检查更新结果（以 BUILD_ID / git short SHA 为主） */
 export interface UpdateInfo {
   /** 本地构建号：BUILD_ID short hash，无则 package.json version */
@@ -52,6 +59,18 @@ export interface UpdateInfo {
   buildId?: string;
   /** 检查失败时的错误说明 */
   error?: string;
+  /**
+   * 部署形态探测结果。
+   * docker-host-register：compose 挂了 ./register → /opt/register-host，entrypoint 会盖掉镜像内脚本，
+   * 只 pull 镜像仍可能显示旧 Build（issue #10）。
+   */
+  deployMode?: UpdateDeployMode;
+  /** 是否检测到完整的宿主 register 覆盖源 */
+  hostRegisterOverride?: boolean;
+  /** 一键复制用的宿主机更新命令（多行 shell） */
+  updateCommands?: string;
+  /** 给人看的短提示（侧栏 title / toast） */
+  updateHint?: string;
 }
 
 /** 邮箱最新验证码查询结果 */

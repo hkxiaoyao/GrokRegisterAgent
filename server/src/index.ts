@@ -23,7 +23,12 @@ import {
   listAccounts,
   resyncAccountsFromDisk
 } from './accountStore.js';
-import { checkForUpdate, currentVersion, currentBuildId } from './updateCheck.js';
+import {
+  checkForUpdate,
+  currentVersion,
+  currentBuildId,
+  detectDeployContext
+} from './updateCheck.js';
 import { fetchEmails, extractVerificationCode, fetchLatestCodeByAddress } from './api/emailApi.js';
 import { probeProxy, probeProxyBatch } from './api/proxyApi.js';
 import { fetchProxiesFromUrl } from './api/proxyFetchApi.js';
@@ -412,7 +417,15 @@ app.get('/api/system/health', async (_req, res) => {
 
 app.get('/api/system/version', (_req, res) => {
   const buildId = currentBuildId();
-  res.json({ current: buildId, buildId, version: currentVersion() });
+  const deploy = detectDeployContext();
+  res.json({
+    current: buildId,
+    buildId,
+    version: currentVersion(),
+    deployMode: deploy.deployMode,
+    hostRegisterOverride: deploy.hostRegisterOverride,
+    updateHint: deploy.updateHint
+  });
 });
 
 app.get('/api/system/update-check', async (_req, res) => {
