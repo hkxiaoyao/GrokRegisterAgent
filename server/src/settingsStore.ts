@@ -35,6 +35,14 @@ function asMailProvider(v: unknown, fallback: MailProvider): MailProvider {
     return 'gptmail';
   }
   if (
+    s === 'cloudmail' ||
+    s === 'cloud-mail' ||
+    s === 'skymail' ||
+    s === 'cloud_mail'
+  ) {
+    return 'cloudmail';
+  }
+  if (
     s === 'cloudflare' ||
     s === 'cf' ||
     s === 'vmail' ||
