@@ -1292,6 +1292,12 @@ export function parseStringList(raw?: string): string[] {
   return out;
 }
 
+/** Cloud Mail（skymail）别名，与 settingsStore.asMailProvider / Python _mail_provider 对齐 */
+export function isCloudMailProvider(provider: string): boolean {
+  const p = String(provider || '').trim().toLowerCase();
+  return p === 'cloudmail' || p === 'cloud-mail' || p === 'cloud_mail' || p === 'skymail';
+}
+
 function hasDomain(s: AppSettings): boolean {
   // 域名池仅 Cloudflare；其他提供方不校验池
   const provider = String(s?.mailProvider || 'cloudflare').toLowerCase();
@@ -1300,6 +1306,8 @@ function hasDomain(s: AppSettings): boolean {
     return parseStringList(s.mailDomains).length > 0;
   }
   if (isCf) return !!String(s?.mail?.domain ?? '').trim();
+  // cloudmail：建号必须带域名（addUser 不会自动分配）
+  if (isCloudMailProvider(provider)) return !!String(s?.mail?.domain ?? '').trim();
   // duckmail / yyds / gptmail：域名可选（由 API 分配）
   return true;
 }
@@ -1358,17 +1366,21 @@ export function validateSettings(s: AppSettings): Record<string, string> {
         provider === 'gptmail' ||
         provider === 'gpt' ||
         provider === 'chatgpt_mail';
-      // duckmail 公共实例可不填 token；CF 匿名模式可不填；yyds/gptmail 需 X-API-Key
+      const isCloudMail = isCloudMailProvider(provider);
+      // duckmail 公共实例可不填 token；CF 匿名模式可不填；yyds/gptmail 需 X-API-Key；cloudmail 需开放 Token
       const needAuth =
         isYyds ||
         isGptmail ||
+        isCloudMail ||
         (isCf && String(s.cloudflareAuthMode || 'x-admin-auth') !== 'none');
       if (needAuth && !String(mail.adminAuth ?? '').trim()) {
         errors['mail.adminAuth'] = isYyds
           ? '请填写 YYDS API Key'
           : isGptmail
             ? '请填写 GPTMail API Key（X-API-Key）'
-            : '请填写邮件后端管理密码';
+            : isCloudMail
+              ? '请填写 Cloud Mail 开放 API Token'
+              : '请填写邮件后端管理密码';
       }
     }
     if (!hasDomain({ ...s, mail })) {

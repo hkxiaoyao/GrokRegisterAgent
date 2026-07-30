@@ -475,7 +475,9 @@ export function SettingsForm() {
                 ? 'YYDS Mail'
                 : (draft.mailProvider || 'cloudflare') === 'gptmail'
                   ? 'GPTMail'
-                  : 'Cloudflare Temp Email'
+                  : (draft.mailProvider || 'cloudflare') === 'cloudmail'
+                    ? 'Cloud Mail'
+                    : 'Cloudflare Temp Email'
           }
           right={
             <MailConnectivityIcon
@@ -506,7 +508,7 @@ export function SettingsForm() {
               <>
           <Field
             label="邮箱提供方"
-            hint="cloudflare：支持域名池；duckmail/yyds/gptmail：由服务端分配域名，无客户端域名池接口"
+            hint="cloudflare：支持域名池；duckmail/yyds/gptmail：由服务端分配域名；cloudmail：单域名必填"
           >
             <select
               className={SELECT_CLASS}
@@ -528,6 +530,7 @@ export function SettingsForm() {
               <option value="duckmail">DuckMail</option>
               <option value="yyds">YYDS Mail</option>
               <option value="gptmail">GPTMail</option>
+              <option value="cloudmail">Cloud Mail</option>
             </select>
           </Field>
           {/* 连接：API + 密码 并排 */}
@@ -541,7 +544,9 @@ export function SettingsForm() {
                     ? '默认 https://maliapi.215.im/v1（可改自建）'
                     : provider === 'gptmail'
                       ? '默认 https://mail.chatgpt.org.uk（站点根，勿带 /api）'
-                      : 'Worker API 根地址，勿填前端 Pages 域名'
+                      : provider === 'cloudmail'
+                        ? 'Cloud Mail 部署根，如 https://mail.example.com'
+                        : 'Worker API 根地址，勿填前端 Pages 域名'
               }
               error={errors['mail.apiBase']}
             >
@@ -558,7 +563,9 @@ export function SettingsForm() {
                         ? 'https://api.duckmail.sbs'
                         : provider === 'gptmail'
                           ? 'https://mail.chatgpt.org.uk'
-                          : 'https://api.example.com'
+                          : provider === 'cloudmail'
+                            ? 'https://mail.example.com'
+                            : 'https://api.example.com'
                 }
               />
             </Field>
@@ -568,7 +575,9 @@ export function SettingsForm() {
                   ? 'API Key（X-API-Key）'
                   : provider === 'duckmail'
                     ? 'API Token（可选）'
-                    : '管理密码'
+                    : provider === 'cloudmail'
+                      ? '开放 API Token'
+                      : '管理密码'
               }
               hint={
                 provider === 'yyds'
@@ -577,9 +586,11 @@ export function SettingsForm() {
                     ? 'GPTMail 控制台 API Key，请求头 X-API-Key（不是 Bearer）'
                     : provider === 'duckmail'
                       ? '公共 DuckMail 可不填；自建实例如需鉴权再填'
-                      : draft.cloudflareAuthMode === 'none'
-                        ? '匿名模式可不填'
-                        : 'Temp Email 管理员密码 / API Key（随鉴权模式）'
+                      : provider === 'cloudmail'
+                        ? '开放 API Token（裸 Token，勿加 Bearer 前缀）'
+                        : draft.cloudflareAuthMode === 'none'
+                          ? '匿名模式可不填'
+                          : 'Temp Email 管理员密码 / API Key（随鉴权模式）'
               }
               error={errors['mail.adminAuth']}
             >
@@ -660,13 +671,17 @@ export function SettingsForm() {
           ) : (
           <div className="space-y-2 rounded-xl border border-border/70 bg-muted/25 p-3.5">
             <Field
-              label="首选域名（可选）"
+              label={
+                provider === 'cloudmail' ? '邮件域名（必填）' : '首选域名（可选）'
+              }
               hint={
-                provider === 'yyds'
-                  ? 'YYDS 由服务端分配域名（创建体 localPart）；此处一般留空'
-                  : provider === 'gptmail'
-                    ? 'GPTMail 可由 API 分配域名；可选填偏好域名（generate-email domain）'
-                    : 'DuckMail 可从 /domains 自动取域；可选填偏好域名'
+                provider === 'cloudmail'
+                  ? '单域名必填，须已在 Cloud Mail 绑定，例如 example.com'
+                  : provider === 'yyds'
+                    ? 'YYDS 由服务端分配域名（创建体 localPart）；此处一般留空'
+                    : provider === 'gptmail'
+                      ? 'GPTMail 可由 API 分配域名；可选填偏好域名（generate-email domain）'
+                      : 'DuckMail 可从 /domains 自动取域；可选填偏好域名'
               }
               error={errors['mail.domain']}
             >
@@ -674,7 +689,9 @@ export function SettingsForm() {
                 value={draft.mail.domain}
                 onChange={(e) => updateMail('domain', e.target.value)}
                 invalid={!!errors['mail.domain']}
-                placeholder="可选 example.com"
+                placeholder={
+                  provider === 'cloudmail' ? 'example.com' : '可选 example.com'
+                }
               />
             </Field>
             <p className="text-[11px] leading-4 text-muted-foreground">

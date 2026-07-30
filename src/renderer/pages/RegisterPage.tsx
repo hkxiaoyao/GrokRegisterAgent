@@ -23,6 +23,7 @@ import { useToastStore } from '@renderer/store/toastStore';
 import { cn } from '@renderer/lib/cn';
 import type { AppSettings, CpaMintMode, RegisterPlanId } from '@shared/settings';
 import {
+  isCloudMailProvider,
   normalizeRegisterPlanOrder
 } from '@shared/settings';
 import { RegisterPlanOrderControl } from '@renderer/components/domain/RegisterPlanOrderControl';
@@ -80,6 +81,10 @@ export function RegisterPage({ onOpenSettings }: { onOpenSettings(): void }) {
 
     if (isDuck) return true;
     if (isYyds || isGpt) return Boolean(adminAuth);
+    // cloudmail：Token + 单域名都必填（addUser 不分配域名）
+    if (isCloudMailProvider(provider)) {
+      return Boolean(adminAuth) && Boolean(String(settings.mail?.domain || '').trim());
+    }
 
     // Cloudflare
     const authOk =
