@@ -42,8 +42,16 @@ def _normalize_mail_api_base(raw: str) -> str:
     base = (raw or "").strip().rstrip("/")
     if not base:
         return ""
-    # 去掉误粘贴的路径后缀
-    for suffix in ("/admin/new_address", "/admin", "/api/mails", "/api"):
+    # 去掉误粘贴的路径后缀（长的在前，先剥 /api/public/* 再剥 /api）
+    for suffix in (
+        "/admin/new_address",
+        "/admin",
+        "/api/mails",
+        "/api/public/emaillist",
+        "/api/public/adduser",
+        "/api/public",
+        "/api",
+    ):
         if base.lower().endswith(suffix):
             base = base[: -len(suffix)].rstrip("/")
     return base
@@ -102,6 +110,8 @@ def _mail_provider() -> str:
         return "yyds"
     if p in ("gptmail", "gpt", "chatgpt_mail", "chatgpt-mail"):
         return "gptmail"
+    if p in ("cloudmail", "cloud-mail", "skymail", "cloud_mail"):
+        return "cloudmail"
     return p or "cloudflare"
 
 
@@ -128,6 +138,9 @@ def get_email_and_token() -> Tuple[Optional[str], Optional[str]]:
         return _ensure_human_email(email, token, provider)
     if provider == "gptmail":
         email, token = _create_gptmail()
+        return _ensure_human_email(email, token, provider)
+    if provider == "cloudmail":
+        email, token = _create_cloudmail()
         return _ensure_human_email(email, token, provider)
     email, _password, jwt = create_temp_email()
     if email and jwt:
@@ -441,6 +454,130 @@ def _create_gptmail() -> Tuple[Optional[str], Optional[str]]:
         except Exception as e:
             last_err = f"{e} | {url}"
     raise Exception(f"gptmail create failed: {last_err}")
+
+
+def _cloudmail_headers(token: str) -> Dict[str, str]:
+    """Cloud Mail 用裸 Token 放 Authorization（不是 Bearer）。"""
+    t = (token or "").strip()
+    if len(t) >= 7 and t[:7].lower() == "bearer ":
+        t = t[7:].strip()
+    return {
+        "Authorization": t,
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+
+def _create_cloudmail() -> Tuple[Optional[str], Optional[str]]:
+    """
+    Cloud Mail（skymail，https://doc.skymail.ink/api/api-doc）：
+      建号：POST {base}/api/public/addUser  header Authorization: <token>
+            body {"list":[{"email":"a@dom","password":"…"}]}
+      读信：POST {base}/api/public/emailList  body {"toEmail":…,"type":0}
+    返回 (email, token)；token 复用 mail_admin_auth 供轮询。
+    config: mail_api_base 部署根、mail_admin_auth 开放 API Token、mail_domain 必填单域名。
+    """
+    _reload_mail_conf()
+    base = MAIL_API_BASE.rstrip("/")
+    token = MAIL_ADMIN_AUTH.strip()
+    if not base:
+        raise Exception("cloudmail: mail_api_base 未设置（如 https://mail.example.com）")
+    if not token:
+        raise Exception("cloudmail: mail_admin_auth 未设置（填 Cloud Mail 开放 API Token）")
+    domain = next_mail_domain(MAIL_DOMAIN) or MAIL_DOMAIN
+    domain = (domain or "").strip().lstrip("@")
+    if not domain:
+        raise Exception("cloudmail: mail_domain 未设置（Cloud Mail 不会自动分配域名）")
+    session, use_cffi = _create_session()
+    headers = _cloudmail_headers(token)
+    url = f"{base}/api/public/addUser"
+    last_err = ""
+    for _ in range(4):
+        address = f"{_generate_local_part()}@{domain}"
+        password = (
+            random.choice(string.ascii_uppercase)
+            + "".join(random.choice(string.ascii_letters + string.digits) for _ in range(11))
+            + "!"
+        )
+        try:
+            res = _do_request(
+                session,
+                use_cffi,
+                "post",
+                url,
+                json={"list": [{"email": address, "password": password}]},
+                headers=headers,
+                timeout=25,
+            )
+            if res.status_code not in (200, 201):
+                last_err = f"HTTP {res.status_code}: {(res.text or '')[:200]} | {url}"
+                if res.status_code in (401, 403):
+                    break
+                continue
+            data = res.json() if res.text else {}
+            if not isinstance(data, dict):
+                data = {}
+            code = data.get("code")
+            if code in (200, "200", 0, None):
+                print(f"[*] cloudmail 创建成功: {address}")
+                return address, token
+            last_err = f"code={code} {str(data.get('message') or data)[:200]}"
+            # 地址已存在等冲突 → 换名重试；鉴权失败直接退出
+            if "token" in last_err.lower() or code in (401, 403):
+                break
+        except Exception as e:
+            last_err = f"{e} | {url}"
+    raise Exception(f"cloudmail 创建失败: {last_err}")
+
+
+def _fetch_cloudmail_emails(token: str, limit: int, email: str) -> List[Dict[str, Any]]:
+    """Cloud Mail 列表：POST /api/public/emailList，正文已在 content/text 内。"""
+    base = MAIL_API_BASE.rstrip("/")
+    if not base:
+        return []
+    session, use_cffi = _create_session()
+    body: Dict[str, Any] = {
+        "type": 0,
+        "timeSort": "desc",
+        "isDel": 0,
+        "num": 1,
+        "size": max(1, int(limit or 20)),
+    }
+    if email:
+        body["toEmail"] = email
+    try:
+        res = _do_request(
+            session,
+            use_cffi,
+            "post",
+            f"{base}/api/public/emailList",
+            json=body,
+            headers=_cloudmail_headers(token or MAIL_ADMIN_AUTH),
+            timeout=15,
+        )
+        if res.status_code != 200:
+            return []
+        data = res.json() if res.text else {}
+    except Exception:
+        return []
+    if not isinstance(data, dict):
+        return []
+    if data.get("code") not in (200, "200", 0, None):
+        return []
+    arr = data.get("data")
+    if isinstance(arr, dict):
+        arr = arr.get("list") or arr.get("records") or arr.get("items")
+    if not isinstance(arr, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for m in arr:
+        if not isinstance(m, dict):
+            continue
+        # 统一 id 字段：轮询循环按 msg["id"] 去重
+        if m.get("id") is None and m.get("emailId") is not None:
+            m = {**m, "id": m.get("emailId")}
+        out.append(m)
+    return out
 
 
 def get_oai_code(dev_token: str, email: str, timeout: int = 30) -> Optional[str]:
@@ -942,12 +1079,15 @@ def _truthy_conf(key: str) -> bool:
 
 
 def fetch_emails(jwt: str, limit: int = 20, email: str = "") -> List[Dict[str, Any]]:
-    """获取邮件列表（cloudflare / duckmail mail.tm / yyds 官方路径）。"""
+    """获取邮件列表（cloudflare / duckmail mail.tm / yyds / gptmail / cloudmail）。"""
     _reload_mail_conf()
     provider = _mail_provider()
     session, use_cffi = _create_session()
     base = MAIL_API_BASE.rstrip("/")
     paths: List[Tuple[str, Dict[str, Any]]] = []
+    if provider == "cloudmail":
+        # Cloud Mail 只有 POST 列表接口，正文随列表返回，无详情接口
+        return _fetch_cloudmail_emails(jwt, limit, email or "")
     if provider == "gptmail":
         base = _normalize_gptmail_base(base or "https://mail.chatgpt.org.uk")
         api_key = (jwt or MAIL_ADMIN_AUTH or "").strip()
@@ -1033,6 +1173,9 @@ def fetch_email_detail(jwt: str, msg_id: Any, email: str = "") -> Optional[Dict]
     base = MAIL_API_BASE.rstrip("/")
     paths: List[str] = []
     params: Dict[str, Any] = {}
+    if provider == "cloudmail":
+        # ponytail: Cloud Mail 无单封详情接口，正文随 emailList 返回；无需再请求
+        return None
     if provider == "gptmail":
         base = _normalize_gptmail_base(base or "https://mail.chatgpt.org.uk")
         api_key = (jwt or MAIL_ADMIN_AUTH or "").strip()
