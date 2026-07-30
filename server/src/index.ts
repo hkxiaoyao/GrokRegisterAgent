@@ -952,7 +952,15 @@ app.post('/api/test/mail', async (req, res) => {
     if (!apiBase) {
       return res.json({ ok: false, message: '请先填写邮件后端地址' });
     }
-    for (const suffix of ['/admin/new_address', '/admin', '/api/mails', '/api']) {
+    for (const suffix of [
+      '/admin/new_address',
+      '/admin',
+      '/api/mails',
+      '/api/public/emaillist',
+      '/api/public/adduser',
+      '/api/public',
+      '/api'
+    ]) {
       if (apiBase.toLowerCase().endsWith(suffix)) {
         apiBase = apiBase.slice(0, -suffix.length).replace(/\/+$/, '');
       }
@@ -1155,6 +1163,102 @@ app.post('/api/test/mail', async (req, res) => {
         return res.json({
           ok: false,
           message: `HTTP ${resp.status}${raw ? `: ${raw.slice(0, 120)}` : ''}`,
+          ms,
+          status: resp.status
+        });
+      } catch (e: any) {
+        return res.json({
+          ok: false,
+          message: `连接失败: ${errorMessage(e)}`,
+          ms: Date.now() - started
+        });
+      }
+    }
+
+    // ---- Cloud Mail（skymail）：裸 Token + POST /api/public/emailList ----
+    // 用只读的列表接口探活，不建号，避免探测残留用户。
+    if (
+      provider === 'cloudmail' ||
+      provider === 'cloud-mail' ||
+      provider === 'cloud_mail' ||
+      provider === 'skymail'
+    ) {
+      let cmToken = adminAuth;
+      if (cmToken.length >= 7 && cmToken.slice(0, 7).toLowerCase() === 'bearer ') {
+        cmToken = cmToken.slice(7).trim();
+      }
+      if (!cmToken) {
+        return res.json({ ok: false, message: '请先填写 Cloud Mail 开放 API Token' });
+      }
+      const url = `${apiBase}/api/public/emailList`;
+      try {
+        const resp = await requestWithProxyFallback(url, {
+          method: 'POST',
+          headers: {
+            Authorization: cmToken,
+            'Content-Type': 'application/json',
+            Accept: 'application/json'
+          },
+          body: { type: 0, num: 1, size: 1 },
+          proxy,
+          timeoutMs: 15000
+        });
+        const ms = Date.now() - started;
+        const raw =
+          typeof resp.data === 'string'
+            ? resp.data
+            : resp.data != null
+              ? JSON.stringify(resp.data)
+              : '';
+        const biz =
+          resp.data && typeof resp.data === 'object'
+            ? (resp.data as { code?: unknown; message?: unknown })
+            : null;
+        const bizCode = biz ? Number(biz.code) : NaN;
+        if (Number.isFinite(bizCode) && bizCode !== 200 && bizCode !== 0) {
+          return res.json({
+            ok: false,
+            message:
+              `已连上 ${apiBase}，但 Cloud Mail 拒绝（code ${bizCode}` +
+              `${biz?.message ? `: ${String(biz.message).slice(0, 80)}` : ''}）。` +
+              '请确认 Authorization 填裸 Token（勿加 Bearer）。',
+            ms,
+            status: resp.status
+          });
+        }
+        if (resp.status >= 200 && resp.status < 300) {
+          return res.json({
+            ok: true,
+            message: `Cloud Mail 连通（Token 可用${resp.via === 'proxy' ? ' · 经代理' : ''}）`,
+            ms,
+            status: resp.status
+          });
+        }
+        if (looksLikeCloudflareChallenge(resp.status, resp.data)) {
+          return res.json({
+            ok: false,
+            message:
+              `已到 ${apiBase}，但被 Cloudflare 挑战拦截（HTTP ${resp.status}）。` +
+              (proxy
+                ? ' 直连与代理均未绕过，请检查 Sing-Box 节点。'
+                : ' 请开启代理模式（Sing-Box）后重试。'),
+            ms,
+            status: resp.status
+          });
+        }
+        if (resp.status === 401 || resp.status === 403) {
+          return res.json({
+            ok: false,
+            message: `已连上 ${apiBase}，但 Token 被拒（HTTP ${resp.status}）。请重新生成开放 API Token。`,
+            ms,
+            status: resp.status
+          });
+        }
+        return res.json({
+          ok: false,
+          message:
+            `HTTP ${resp.status}${raw ? `: ${raw.slice(0, 120)}` : ''}` +
+            '（地址应填 Cloud Mail 部署根，如 https://mail.example.com）',
           ms,
           status: resp.status
         });

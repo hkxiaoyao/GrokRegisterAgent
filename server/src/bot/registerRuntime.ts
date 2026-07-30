@@ -186,7 +186,15 @@ function writeConfigForPythonLocked(
 
   // 规范化：去掉尾斜杠与误填的 /admin|/api 后缀（否则 POST 会 405）
   let mailBase = String(settings.mail?.apiBase || '').trim().replace(/\/+$/, '');
-  for (const suffix of ['/admin/new_address', '/admin', '/api/mails', '/api']) {
+  for (const suffix of [
+    '/admin/new_address',
+    '/admin',
+    '/api/mails',
+    '/api/public/emaillist',
+    '/api/public/adduser',
+    '/api/public',
+    '/api'
+  ]) {
     if (mailBase.toLowerCase().endsWith(suffix)) {
       mailBase = mailBase.slice(0, -suffix.length).replace(/\/+$/, '');
     }
@@ -200,7 +208,7 @@ function writeConfigForPythonLocked(
   // 关掉后邮件 API 直连、仅浏览器/注册流量走代理。
   config.mail_api_use_proxy = settings.mail?.useProxy === true;
 
-  // 邮箱提供方：cloudflare | duckmail | yyds
+  // 邮箱提供方：cloudflare | duckmail | yyds | gptmail | cloudmail
   const mailProvider = String(
     (settings as { mailProvider?: string }).mailProvider || 'cloudflare'
   )
@@ -217,6 +225,13 @@ function writeConfigForPythonLocked(
     mailProvider === 'chatgpt-mail'
   ) {
     config.mail_provider = 'gptmail';
+  } else if (
+    mailProvider === 'cloudmail' ||
+    mailProvider === 'cloud-mail' ||
+    mailProvider === 'cloud_mail' ||
+    mailProvider === 'skymail'
+  ) {
+    config.mail_provider = 'cloudmail';
   } else {
     config.mail_provider = 'cloudflare';
   }
