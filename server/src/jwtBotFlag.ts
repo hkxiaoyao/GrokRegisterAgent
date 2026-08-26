@@ -110,6 +110,122 @@ function readBotFlagSidecar(data: Record<string, unknown>): BotFlagInfo | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// BFS：access/id/sso JWT payload 里存在 `bfs` key 即视为已标记。
+// 与 bot_flag_source 是两个独立信号；语义对齐 register/bfs_check.py。
+// ---------------------------------------------------------------------------
+
+export type BfsStatus = 'flagged' | 'clean' | 'unknown';
+
+export interface BfsInfo {
+  /** flagged=含 bfs key / clean=解码成功无 bfs / unknown=解不出来，绝不伪造 clean */
+  status: BfsStatus;
+  present: boolean;
+  /** claim 原值（可能是数字/字符串），仅 flagged 时有意义 */
+  value?: number | string | null;
+  /** 判定依据来自哪个 token：access_token / id_token / sso */
+  source?: string;
+}
+
+// 与 Python 端 BFS_CLAIM_KEYS 保持一致
+const BFS_CLAIM_KEYS = ['bfs', 'BFS', 'bot_flag_score', 'botFlagScore'] as const;
+
+function normalizeBfsClaimValue(v: unknown): number | string | null {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : String(v);
+  if (typeof v === 'string') return v;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+
+/** 单个 token 的 BFS 判定：key 存在即 flagged，值不参与判定 */
+export function readBfsFromToken(token: string): BfsInfo {
+  const t = String(token || '')
+    .replace(/^sso=/i, '')
+    .trim();
+  if (!t) return { status: 'unknown', present: false };
+  const pl = decodeJwtPayload(t);
+  if (!pl) return { status: 'unknown', present: false };
+  for (const k of BFS_CLAIM_KEYS) {
+    if (k in pl) {
+      return { status: 'flagged', present: true, value: normalizeBfsClaimValue(pl[k]) };
+    }
+  }
+  return { status: 'clean', present: false };
+}
+
+/** 按 access → id_token → sso 顺序判定；任一命中即 flagged */
+function extractBfs(access: string, idToken: string, sso: string): BfsInfo {
+  let sawDecodable = false;
+  for (const [name, tok] of [
+    ['access_token', access],
+    ['id_token', idToken],
+    ['sso', sso]
+  ] as const) {
+    const t = String(tok || '').trim();
+    if (!t) continue;
+    const r = readBfsFromToken(t);
+    if (r.status === 'flagged') return { ...r, source: name };
+    if (r.status === 'clean') sawDecodable = true;
+  }
+  return sawDecodable
+    ? { status: 'clean', present: false }
+    : { status: 'unknown', present: false };
+}
+
+/**
+ * 从已落盘的 CPA auth JSON 读 BFS：
+ * 侧车字段（mint 时由 bfs_check.py 写入）优先，其次重新解码 token。
+ * 兼容旧写法：`bfs` 可能是布尔标记位，也可能直接存 claim 原值。
+ */
+export function readBfsFromAuthRecord(data: Record<string, unknown>): BfsInfo {
+  if (!data || typeof data !== 'object') {
+    return { status: 'unknown', present: false };
+  }
+  if ('bfs_status' in data) {
+    const st = String(data.bfs_status ?? '')
+      .trim()
+      .toLowerCase();
+    if (st === 'flagged' || st === 'clean' || st === 'unknown') {
+      return {
+        status: st,
+        present: st === 'flagged',
+        value: normalizeBfsClaimValue(data.bfs_value)
+      };
+    }
+  }
+  if ('bfs' in data) {
+    const raw = data.bfs;
+    // 值 0 也算标记：信号是「key 存在」，与 Python 端一致
+    let present: boolean;
+    if (typeof raw === 'boolean') present = raw;
+    else if (raw == null) present = false;
+    else if (typeof raw === 'string')
+      present = !['', '0', 'false', 'no', 'clean'].includes(raw.trim().toLowerCase());
+    else present = true;
+    return {
+      status: present ? 'flagged' : 'clean',
+      present,
+      value: present ? normalizeBfsClaimValue(data.bfs_value ?? raw) : null
+    };
+  }
+  let sso = String(data.sso || '').trim();
+  if (!sso) {
+    const extra = data.extra;
+    if (extra && typeof extra === 'object') {
+      sso = String((extra as Record<string, unknown>).sso || '').trim();
+    }
+  }
+  return extractBfs(
+    String(data.access_token || data.key || '').trim(),
+    String(data.id_token || '').trim(),
+    sso
+  );
+}
+
 /**
  * 优先侧车字段，其次 access_token / sso / id_token JWT。
  * 注意：access 无 bot_flag_source claim 时必须继续读 sso。

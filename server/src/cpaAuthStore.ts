@@ -9,7 +9,11 @@ import { createHash } from 'node:crypto';
 import { loadSettings, dataDir } from './settingsStore.js';
 import { resolveHttpProxy } from './resolveHttpProxy.js';
 import { resolveRegisterRuntime } from './bot/registerRuntime.js';
-import { readBotFlagFromAuthRecord, readBotFlagFromToken } from './jwtBotFlag.js';
+import {
+  readBotFlagFromAuthRecord,
+  readBotFlagFromToken,
+  readBfsFromAuthRecord
+} from './jwtBotFlag.js';
 import { proxiedRequest, requestWithProxyFallback, errorMessage } from './httpClient.js';
 import { broadcastAppEvent } from './appEvents.js';
 import type { ReloginStage } from '@shared/runEvents.js';
@@ -123,6 +127,11 @@ export interface CpaAuthItem {
   /** 已成功推送到 sub2api (S2A) */
   pushedS2a?: boolean;
   pushedS2aAt?: string | null;
+  /** BFS：access/id/sso JWT payload 含 bfs key 即 flagged（与 bot_flag_source 独立） */
+  bfsStatus?: 'flagged' | 'clean' | 'unknown';
+  bfsPresent?: boolean;
+  bfsValue?: number | string | null;
+  bfsSource?: string | null;
 }
 
 /** 规范化 SSO cookie / JWT 文本后做 SHA-256 hex */
@@ -494,6 +503,7 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
       }
       const flags = xaiFlags(name, data);
       const bot = readBotFlagFromAuthRecord(data);
+      const bfs = readBfsFromAuthRecord(data);
       const rawSso = extractSsoFromAuthData(data);
       const ssoHash = hashSsoToken(rawSso);
       const hasSso = Boolean(rawSso && rawSso.trim());
@@ -617,6 +627,10 @@ export async function listCpaAuth(): Promise<{ dir: string; items: CpaAuthItem[]
         pushedCpaAt,
         pushedS2a,
         pushedS2aAt,
+        bfsStatus: bfs.status,
+        bfsPresent: bfs.present,
+        bfsValue: bfs.value ?? null,
+        bfsSource: bfs.source ?? null,
         zdrClosed,
         zdrAttempted,
         zdrAt,

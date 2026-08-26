@@ -184,6 +184,11 @@ export interface CpaAuthItem {
   /** 已成功推送到 sub2api (S2A) 时为 true */
   pushedS2a?: boolean;
   pushedS2aAt?: string | null;
+  /** BFS：access/id/sso JWT payload 含 bfs key 即 flagged（与 bot_flag_source 独立信号） */
+  bfsStatus?: 'flagged' | 'clean' | 'unknown';
+  bfsPresent?: boolean;
+  bfsValue?: number | string | null;
+  bfsSource?: string | null;
 }
 
 export interface CpaAuthListResult {

@@ -33,6 +33,7 @@ from sso_to_auth import (
     write_cpa_auth,
 )
 from cpa_probe import probe_and_cleanup, probe_models, probe_mini_response
+from bfs_check import BFS_FLAGGED, BFS_UNKNOWN, bfs_sidecar_fields
 
 LogFn = Callable[[str], None]
 
@@ -126,6 +127,69 @@ def _risk_mint_light_attempts_enabled() -> bool:
     except Exception:
         pass
     return True
+
+
+def _conf_bool(
+    env_keys: tuple[str, ...],
+    conf_keys: tuple[str, ...],
+    default: bool,
+) -> bool:
+    """env 优先、其次 register/config.json，最后 default。空值不算显式设置。"""
+
+    def _parse(v: Any) -> bool | None:
+        if isinstance(v, bool):
+            return v
+        s = str(v if v is not None else "").strip().lower()
+        if s in ("0", "false", "no", "off"):
+            return False
+        if s in ("1", "true", "yes", "on"):
+            return True
+        return None
+
+    for k in env_keys:
+        got = _parse(os.environ.get(k))
+        if got is not None:
+            return got
+    conf_path = Path(__file__).resolve().parent / "config.json"
+    try:
+        conf = json.loads(conf_path.read_text(encoding="utf-8"))
+        if isinstance(conf, dict):
+            for k in conf_keys:
+                if k not in conf:
+                    continue
+                got = _parse(conf.get(k))
+                if got is not None:
+                    return got
+    except Exception:
+        pass
+    return default
+
+
+def _bfs_check_enabled() -> bool:
+    """mint 后解码 access_token 检测 `bfs` claim。Default True（只读，无成本）。"""
+    return _conf_bool(
+        ("BFS_CHECK", "bfs_check"),
+        ("bfs_check", "bfsCheck"),
+        True,
+    )
+
+
+def _bfs_skip_cpa_enabled() -> bool:
+    """命中 bfs 时不写 CPA/远程。Default False（默认只标记不拦截）。"""
+    return _conf_bool(
+        ("BFS_SKIP_CPA", "bfs_skip_cpa"),
+        ("bfs_skip_cpa", "bfsSkipCpa"),
+        False,
+    )
+
+
+def _bfs_disable_cpa_enabled() -> bool:
+    """命中 bfs 仍写 CPA，但标 disabled=true。Default False。"""
+    return _conf_bool(
+        ("BFS_DISABLE_CPA", "bfs_disable_cpa"),
+        ("bfs_disable_cpa", "bfsDisableCpa"),
+        False,
+    )
 
 
 def probe_sso_oauth_gate(
@@ -611,6 +675,62 @@ def _write_and_probe_one(
         f"channel={channel}; independent OAuth grant; dual mint does not invalidate peer"
     )
 
+    # BFS claim 检测：access_token JWT payload 含 `bfs` key 即视为已标记。
+    # 与 botFlagSource / policy=deny 不是同一信号，只读解码，无法改写已签发 claim。
+    # 解不开的 token 记 unknown，绝不当 clean。
+    bfs_info: dict[str, Any] = {}
+    if _bfs_check_enabled():
+        bfs_info = bfs_sidecar_fields(
+            token.get("access_token") or "",
+            token.get("id_token") or "",
+            sso,
+        )
+        payload.update(bfs_info)
+        bfs_status = str(bfs_info.get("bfs_status") or "")
+        if bfs_status == BFS_FLAGGED:
+            log(
+                f"[auth] channel={channel} ⚠ BFS 命中 "
+                f"bfs={bfs_info.get('bfs_value')!r} "
+                f"source={bfs_info.get('bfs_source') or '-'} "
+                f"email={payload.get('email') or email or '-'}"
+            )
+        elif bfs_status == BFS_UNKNOWN:
+            log(f"[auth] channel={channel} BFS unknown（JWT 解不开，不判定为 clean）")
+
+        # bfs_skip_cpa：命中（或 unknown）时不落本地 auth，避免 CPA 热加载到坏号
+        skip_for_bfs = bfs_status == BFS_FLAGGED or bfs_status == BFS_UNKNOWN
+        if skip_for_bfs and _bfs_skip_cpa_enabled():
+            log(
+                f"[auth] channel={channel} ✘ bfs_skip_cpa=true，跳过 CPA 写入"
+                f"（bfs_status={bfs_status}）"
+            )
+            return {
+                "ok": False,
+                "channel": channel,
+                "email": payload.get("email") or email,
+                "path": "",
+                "filename": "",
+                "sub": payload.get("sub") or "",
+                "skipped_bfs": True,
+                "probe": None,
+                "probe_alive": False,
+                "referrer": ref,
+                "remote": {
+                    "ok": False,
+                    "skipped": True,
+                    "error": f"bfs_skip_cpa: {bfs_status}",
+                },
+                "mint_mode": channel,
+                "error": f"bfs_skip_cpa: bfs_status={bfs_status}",
+                **bfs_info,
+            }
+        # bfs_disable_cpa：仍写入但标 disabled，人工复核后可启用
+        if bfs_status == BFS_FLAGGED and _bfs_disable_cpa_enabled():
+            payload["disabled"] = True
+            log(
+                f"[auth] channel={channel} bfs_disable_cpa=true → 写入但标 disabled=true"
+            )
+
     path = write_cpa_auth(out_dir, payload, channel=channel)
     log(f"[auth] wrote {path} channel={channel}")
 
@@ -744,7 +864,7 @@ def _write_and_probe_one(
             chat_probe = {"ok": False, "error": str(ce)[:200]}
             log(f"[auth] channel={channel} chat probe skip: {ce}")
 
-    # 回写 has_grok_45 / chat 到本地文件
+    # 回写 has_grok_45 / chat / BFS 到本地文件
     try:
         if path.is_file():
             doc = json.loads(path.read_text(encoding="utf-8"))
@@ -754,6 +874,8 @@ def _write_and_probe_one(
                 if chat_probe is not None:
                     doc["chat_probe_ok"] = bool(chat_probe.get("ok"))
                     doc["chat_probe_status"] = chat_probe.get("status")
+                if bfs_info:
+                    doc.update(bfs_info)
                 path.write_text(
                     json.dumps(doc, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
@@ -835,6 +957,7 @@ def _write_and_probe_one(
         "filename": path.name if still else "",
         "sub": payload.get("sub") or "",
         "agent_id": (headers or {}).get("x-grok-agent-id", ""),
+        **bfs_info,
         "probe": probe,
         "probe_alive": bool(alive) and not dead and not fake_alive,
         "has_grok_45": has_g45,

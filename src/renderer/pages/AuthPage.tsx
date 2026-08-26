@@ -22,6 +22,7 @@ import { FilterBar, FilterSegmentGroup } from '@renderer/components/ui/FilterSeg
 import { Switch } from '@renderer/components/ui/Switch';
 import { PaginationBar } from '@renderer/components/ui/PaginationBar';
 import { BotFlagBadge } from '@renderer/components/domain/BotFlagBadge';
+import { BfsBadge } from '@renderer/components/domain/BfsBadge';
 import { NsfwBadge } from '@renderer/components/domain/NsfwBadge';
 import { PushChannelBadge } from '@renderer/components/domain/PushChannelBadge';
 import { ZdrBadge } from '@renderer/components/domain/ZdrBadge';
@@ -111,9 +112,13 @@ type TaskProgress = {
 const PAGE_SIZE_KEY = 'gra-auth-page-size';
 const META_FILTER_KEY = 'gra-auth-meta-filter';
 const STATUS_FILTER_KEY = 'gra-auth-status-filter';
+const BFS_FILTER_KEY = 'gra-auth-bfs-filter';
 
 /** 行内标记筛选：全部 / 无sso / 无邮箱 / 待补全 */
 type MetaFilter = 'all' | 'no_sso' | 'no_email' | 'need_fill' | 'pushed_cpa' | 'pushed_s2a' | 'not_pushed';
+
+/** BFS 筛选：全部 / 已标记 / 正常 / 未知（旧 token 解不开） */
+type BfsFilter = 'all' | 'flagged' | 'clean' | 'unknown';
 
 /** 状态列（HTTP）筛选：全部 / 未测 / 200 / 401 / 403 / 其它错误 */
 type StatusFilter = 'all' | 'unprobed' | '200' | '401' | '403' | 'other_err';
@@ -133,6 +138,16 @@ function loadMetaFilter(): MetaFilter {
       return v as MetaFilter;
     }
     if (v === 'no_sso' || v === 'no_email' || v === 'need_fill' || v === 'all') return v;
+  } catch {
+    /* ignore */
+  }
+  return 'all';
+}
+
+function loadBfsFilter(): BfsFilter {
+  try {
+    const v = localStorage.getItem(BFS_FILTER_KEY);
+    if (v === 'flagged' || v === 'clean' || v === 'unknown' || v === 'all') return v;
   } catch {
     /* ignore */
   }
@@ -279,6 +294,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   const [emailMasked, setEmailMasked] = useState(() => loadEmailPrivacyMask());
   const [metaFilter, setMetaFilter] = useState<MetaFilter>(() => loadMetaFilter());
   const [statusFilter, setStatusFilter] = useState<StatusFilter>(() => loadStatusFilter());
+  const [bfsFilter, setBfsFilter] = useState<BfsFilter>(() => loadBfsFilter());
   const [searchQuery, setSearchQuery] = useState('');
 
   /** 写入单行重登 stage（列表 + 进度条共用） */
@@ -473,6 +489,13 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     if (statusFilter !== 'all') {
       list = list.filter((i) => matchStatusFilter(i, statusFilter));
     }
+    // BFS：unknown（旧 token 解不开）单独一档，不混进 clean
+    if (bfsFilter === 'flagged') list = list.filter((i) => i.bfsStatus === 'flagged');
+    else if (bfsFilter === 'clean') list = list.filter((i) => i.bfsStatus === 'clean');
+    else if (bfsFilter === 'unknown')
+      list = list.filter(
+        (i) => i.bfsStatus == null || i.bfsStatus === 'unknown'
+      );
     const q = searchQuery.trim().toLowerCase();
     if (q) {
       list = list.filter((i) => {
@@ -489,7 +512,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
       });
     }
     return list;
-  }, [items, metaFilter, statusFilter, matchStatusFilter, searchQuery]);
+  }, [items, metaFilter, statusFilter, bfsFilter, matchStatusFilter, searchQuery]);
 
   const {
     pageSize,
@@ -518,6 +541,16 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     resetPage();
     try {
       localStorage.setItem(STATUS_FILTER_KEY, f);
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const changeBfsFilter = (f: BfsFilter) => {
+    setBfsFilter(f);
+    resetPage();
+    try {
+      localStorage.setItem(BFS_FILTER_KEY, f);
     } catch {
       /* ignore */
     }
@@ -1837,6 +1870,17 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
     () => items.filter((i) => !hasSso(i) || !hasEmail(i)).length,
     [items]
   );
+  const bfsCounts = useMemo(() => {
+    let flagged = 0;
+    let clean = 0;
+    let unknown = 0;
+    for (const i of items) {
+      if (i.bfsStatus === 'flagged') flagged += 1;
+      else if (i.bfsStatus === 'clean') clean += 1;
+      else unknown += 1; // undefined / unknown：旧文件或解不开
+    }
+    return { flagged, clean, unknown };
+  }, [items]);
   const statusCounts = useMemo(() => {
     let unprobed = 0;
     let c200 = 0;
@@ -1864,8 +1908,10 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
   }, [items, resolveProbe]);
   const hasActiveMetaFilter = metaFilter !== 'all';
   const hasActiveStatusFilter = statusFilter !== 'all';
+  const hasActiveBfsFilter = bfsFilter !== 'all';
   const hasActiveFilter =
-    (hasActiveMetaFilter || hasActiveStatusFilter) || Boolean(searchQuery.trim());
+    (hasActiveMetaFilter || hasActiveStatusFilter || hasActiveBfsFilter) ||
+    Boolean(searchQuery.trim());
 
   /** 长按「回填SSO」进入 force 覆盖（约 650ms） */
   const backfillHoldRef = useRef<{
@@ -2222,6 +2268,7 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
             onClear={() => {
               clearMetaFilter();
               changeStatusFilter('all');
+              changeBfsFilter('all');
               setSearchQuery('');
             }}
           >
@@ -2264,6 +2311,17 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                 { id: '401', label: '401', count: statusCounts.c401, title: 'HTTP 401 未授权 · 可死者苏生', tone: 'danger' },
                 { id: '403', label: '403', count: statusCounts.c403, title: 'HTTP 403 · 可密码重登', tone: 'danger' },
                 { id: 'other_err', label: '其它', count: statusCounts.other, title: '其它错误码或失败', tone: 'warn' }
+              ]}
+            />
+            <FilterSegmentGroup
+              label="BFS"
+              value={bfsFilter}
+              onChange={changeBfsFilter}
+              options={[
+                { id: 'all', label: '全部', count: items.length, title: '不限制 BFS' },
+                { id: 'flagged', label: '标记', count: bfsCounts.flagged, title: 'JWT payload 含 bfs key（已标记）', tone: 'danger' },
+                { id: 'clean', label: '正常', count: bfsCounts.clean, title: '解码成功且无 bfs key' },
+                { id: 'unknown', label: '未知', count: bfsCounts.unknown, title: '旧文件无记录或 token 解不开', tone: 'muted' }
               ]}
             />
           </FilterBar>
@@ -2854,6 +2912,11 @@ export function AuthPage({ onOpenPool }: { onOpenPool?: () => void } = {}) {
                           is1={item.isBotFlag1}
                           missing="dash"
                           className="shrink-0"
+                        />
+                        <BfsBadge
+                          status={item.bfsStatus}
+                          value={item.bfsValue}
+                          source={item.bfsSource}
                         />
                         <PushChannelBadge
                           channel="CPA"
