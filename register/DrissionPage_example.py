@@ -32,9 +32,55 @@ from pathlib import Path
 from email_register import get_email_and_token, get_oai_code
 
 
+def cleanup_old_logs(log_dir: str, max_days: int = 30, max_files: int = 50):
+    """清理旧日志：删除超过 max_days 天或超出 max_files 数量的日志文件"""
+    try:
+        now = time.time()
+        log_files = []
+        for fname in os.listdir(log_dir):
+            if not fname.endswith(".log"):
+                continue
+            fpath = os.path.join(log_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
+            try:
+                mtime = os.path.getmtime(fpath)
+                log_files.append((fpath, mtime))
+            except Exception:
+                continue
+
+        if not log_files:
+            return
+
+        # 按修改时间降序排列（最新的在前）
+        log_files.sort(key=lambda x: x[1], reverse=True)
+
+        deleted_count = 0
+        cutoff_time = now - (max_days * 86400)
+
+        for i, (fpath, mtime) in enumerate(log_files):
+            # 保留最近 max_files 个文件，且在 max_days 天内
+            if i >= max_files or mtime < cutoff_time:
+                try:
+                    os.remove(fpath)
+                    deleted_count += 1
+                except Exception:
+                    pass
+
+        if deleted_count > 0:
+            print(f"[日志清理] 删除了 {deleted_count} 个旧日志文件", flush=True)
+    except Exception as e:
+        # 清理失败不阻塞主流程
+        print(f"[日志清理] 清理失败: {e}", flush=True)
+
+
 def setup_run_logger() -> logging.Logger:
     log_dir = os.path.join(os.path.dirname(__file__), "logs")
     os.makedirs(log_dir, exist_ok=True)
+
+    # 启动时清理旧日志
+    cleanup_old_logs(log_dir, max_days=30, max_files=10000)
+
     ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     # 加上 PID 避免多 worker 并发时同秒启动写到同一个日志文件
     log_path = os.path.join(log_dir, f"run_{ts}_{os.getpid()}.log")

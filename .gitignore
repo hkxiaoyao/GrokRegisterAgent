@@ -62,3 +62,8 @@ register/_*.bak
 # 本地测试目录（测试用 config 备份、测试产出的 SSO 等）— 不推远端
 register/_localtest/
 
+# Claude Code 配置与诊断文件
+.claude/
+.issue8-diagnostics/
+CLAUDE.md.bak_*
+
